@@ -217,7 +217,6 @@ interface Client {
       pkg: CachedPackage;
       language: string;
       storageHint?: string;
-      distinctSize: number;
     }
   >;
   /** Direct lookup from a retained or preparing package object and language to its key. */
@@ -245,62 +244,20 @@ let requestId = 0,
   packageId = 0;
 
 const MAX_STRUCTURE_DEPTH = 32;
-/**
- * Hard cap on structural comparison work, as a multiple of the retained
- * package's distinct size. Any unshared valid package completes well inside
- * twice its distinct size; a copy whose sharing or extra properties push the
- * comparison past this cap declines reuse and takes the cold path.
- */
-export const COMPARISON_WORK_FACTOR = 2;
-/**
- * Memoize a container pair for content reuse once it has at least
- * MEMO_OWN_KEYS own keys or its checked subtree reaches MEMO_SUBTREE_WORK
- * units. Ordinary unshared row sub-objects stay out of the map, while shared
- * records/arrays reuse their match without per-object Set allocations.
- */
-const MEMO_OWN_KEYS = 24;
-const MEMO_SUBTREE_WORK = 128;
 
 interface StructureState {
   budget: SearchRequestBudget;
-  workCap: number;
+  stepCap: number;
+  chargeSteps: boolean;
+  steps: number;
   leftStack: object[];
   rightStack: object[];
-  matched: Map<object, object> | undefined;
-  memoDepths: number;
-  work: number;
 }
 
 function stringUnits(value: unknown): number {
   return typeof value === "string" && value.length > 64
     ? Math.ceil(value.length / 64)
     : 0;
-}
-
-/**
- * Distinct comparison-unit size of an arbitrary value for direct
- * `samePackageStructure` callers that did not come through `searchPackage`.
- * Uses `Object.keys` and `Object.getOwnPropertySymbols` so it does not perturb
- * `Reflect.ownKeys` spies.
- */
-function distinctStructureSize(
-  value: unknown,
-  seen = new Set<object>(),
-  depth = 0,
-): number {
-  if (typeof value === "string") return stringUnits(value);
-  if (!value || typeof value !== "object") return 0;
-  if (depth >= MAX_STRUCTURE_DEPTH || seen.has(value)) return 0;
-  seen.add(value);
-  const record = value as Record<PropertyKey, unknown>;
-  const names = Object.keys(value);
-  const symbols = Object.getOwnPropertySymbols(value);
-  let total = names.length + symbols.length + (Array.isArray(value) ? 1 : 0);
-  for (let i = 0; i < names.length; i++)
-    total += distinctStructureSize(record[names[i]], seen, depth + 1);
-  for (let i = 0; i < symbols.length; i++)
-    total += distinctStructureSize(record[symbols[i]], seen, depth + 1);
-  return total;
 }
 
 function sameStructuredValue(
@@ -313,9 +270,9 @@ function sameStructuredValue(
     if (incoming.length !== trusted.length) return false;
     if (incoming.length > 64) {
       const units = Math.ceil(incoming.length / 64);
-      if (state.work + units > state.workCap) return false;
-      state.budget.reserve(units, "prepare");
-      state.work += units;
+      if (state.steps + units > state.stepCap) return false;
+      if (state.chargeSteps) state.budget.reserve(units, "prepare");
+      state.steps += units;
     }
     return incoming === trusted;
   }
@@ -328,32 +285,29 @@ function sameStructuredValue(
     return Object.is(incoming, trusted);
   const isArray = Array.isArray(trusted);
   if (Array.isArray(incoming) !== isArray) return false;
-  if (!isArray) {
+  if (isArray) {
+    if (
+      Object.getPrototypeOf(incoming) !== Array.prototype ||
+      Object.getPrototypeOf(trusted) !== Array.prototype
+    )
+      return false;
+  } else {
     const protoA = Object.getPrototypeOf(incoming);
     const protoB = Object.getPrototypeOf(trusted);
     if (
-      (protoA !== Object.prototype && protoA !== null) ||
-      (protoB !== Object.prototype && protoB !== null)
+      protoA !== protoB ||
+      (protoA !== Object.prototype && protoA !== null)
     )
       return false;
   }
-  if (incoming === trusted) return true;
   if (depth >= MAX_STRUCTURE_DEPTH) return false;
   const { leftStack, rightStack } = state;
   for (let i = 0; i < leftStack.length; i++) {
     if (leftStack[i] === incoming || rightStack[i] === trusted) return false;
   }
-  const depthBit = 1 << depth;
-  if (
-    (state.memoDepths & depthBit) !== 0 &&
-    state.matched!.get(incoming) === trusted
-  )
-    return true;
-  const workBefore = state.work;
   leftStack.push(incoming);
   rightStack.push(trusted);
   let matched = false;
-  let ownKeyCount = 0;
   if (isArray) {
     const left = incoming as unknown[];
     const right = trusted as unknown[];
@@ -361,15 +315,15 @@ function sameStructuredValue(
       const keysA = Reflect.ownKeys(left);
       const keysB = Reflect.ownKeys(right);
       if (keysA.length === keysB.length) {
-        ownKeyCount = keysB.length;
+        const ownKeyCount = keysB.length;
         if (ownKeyCount > 0) {
-          if (state.work + ownKeyCount > state.workCap) {
+          if (state.steps + ownKeyCount > state.stepCap) {
             leftStack.pop();
             rightStack.pop();
             return false;
           }
-          state.budget.reserve(ownKeyCount, "prepare");
-          state.work += ownKeyCount;
+          if (state.chargeSteps) state.budget.reserve(ownKeyCount, "prepare");
+          state.steps += ownKeyCount;
         }
         const leftRecord = left as unknown as Record<PropertyKey, unknown>;
         const rightRecord = right as unknown as Record<PropertyKey, unknown>;
@@ -399,15 +353,15 @@ function sameStructuredValue(
     const keysA = Reflect.ownKeys(incoming);
     const keysB = Reflect.ownKeys(trusted);
     if (keysA.length === keysB.length) {
-      ownKeyCount = keysB.length;
+      const ownKeyCount = keysB.length;
       if (ownKeyCount > 0) {
-        if (state.work + ownKeyCount > state.workCap) {
+        if (state.steps + ownKeyCount > state.stepCap) {
           leftStack.pop();
           rightStack.pop();
           return false;
         }
-        state.budget.reserve(ownKeyCount, "prepare");
-        state.work += ownKeyCount;
+        if (state.chargeSteps) state.budget.reserve(ownKeyCount, "prepare");
+        state.steps += ownKeyCount;
       }
       const left = incoming as Record<PropertyKey, unknown>;
       const right = trusted as Record<PropertyKey, unknown>;
@@ -427,15 +381,6 @@ function sameStructuredValue(
   }
   leftStack.pop();
   rightStack.pop();
-  if (
-    matched &&
-    (ownKeyCount >= MEMO_OWN_KEYS ||
-      state.work - workBefore >= MEMO_SUBTREE_WORK)
-  ) {
-    if (state.matched === undefined) state.matched = new Map();
-    state.matched.set(incoming, trusted);
-    state.memoDepths |= depthBit;
-  }
   return matched;
 }
 
@@ -443,47 +388,183 @@ function sameValidatedPackageStructure(
   incoming: unknown,
   trusted: CachedPackage,
   budget: SearchRequestBudget,
-  workCap?: number,
 ): boolean {
-  if (incoming === trusted) return true;
-  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
+  if (
+    !incoming ||
+    !trusted ||
+    typeof incoming !== "object" ||
+    typeof trusted !== "object" ||
+    Array.isArray(incoming) ||
+    Array.isArray(trusted)
+  )
     return false;
-  const cap =
-    workCap ??
-    COMPARISON_WORK_FACTOR * Math.max(8, distinctStructureSize(trusted));
-  return sameStructuredValue(
-    incoming,
-    trusted,
-    {
-      budget,
-      workCap: cap,
-      leftStack: [],
-      rightStack: [],
-      matched: undefined,
-      memoDepths: 0,
-      work: 0,
-    },
-    0,
-  );
+  const rootProtoA = Object.getPrototypeOf(incoming);
+  const rootProtoB = Object.getPrototypeOf(trusted);
+  if (
+    rootProtoA !== rootProtoB ||
+    (rootProtoA !== Object.prototype && rootProtoA !== null)
+  )
+    return false;
+
+  const leftPkg = incoming as Record<PropertyKey, unknown>;
+  const rightPkg = trusted as unknown as Record<PropertyKey, unknown>;
+  const hasEntries =
+    Object.hasOwn(incoming, "entries") &&
+    Object.hasOwn(trusted, "entries") &&
+    Array.isArray(rightPkg.entries);
+  if (!hasEntries) {
+    return sameStructuredValue(
+      incoming,
+      trusted,
+      {
+        budget,
+        stepCap: 64,
+        chargeSteps: true,
+        steps: 0,
+        leftStack: [],
+        rightStack: [],
+      },
+      0,
+    );
+  }
+
+  const keysA = Reflect.ownKeys(incoming);
+  const keysB = Reflect.ownKeys(trusted);
+  if (keysA.length !== keysB.length) return false;
+  const headerUnits =
+    1 +
+    stringUnits(leftPkg.snapshot) +
+    stringUnits(leftPkg.search_view) +
+    stringUnits(leftPkg.downgrade);
+  budget.reserve(headerUnits, "prepare");
+  const leftStack: object[] = [incoming];
+  const rightStack: object[] = [trusted];
+  const headerState: StructureState = {
+    budget,
+    stepCap: 64 + headerUnits,
+    chargeSteps: false,
+    steps: 0,
+    leftStack,
+    rightStack,
+  };
+  for (let i = 0; i < keysB.length; i++) {
+    const key = keysB[i];
+    if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
+    if (key === "entries") continue;
+    if (headerState.steps + 1 > headerState.stepCap) return false;
+    headerState.steps++;
+    if (!sameStructuredValue(leftPkg[key], rightPkg[key], headerState, 1))
+      return false;
+  }
+
+  const leftEntries = leftPkg.entries;
+  const rightEntries = rightPkg.entries as unknown[];
+  if (
+    !Array.isArray(leftEntries) ||
+    Object.getPrototypeOf(leftEntries) !== Array.prototype ||
+    Object.getPrototypeOf(rightEntries) !== Array.prototype ||
+    leftEntries.length !== rightEntries.length
+  )
+    return false;
+  const entryKeysA = Reflect.ownKeys(leftEntries);
+  const entryKeysB = Reflect.ownKeys(rightEntries);
+  if (entryKeysA.length !== entryKeysB.length) return false;
+
+  leftStack.push(leftEntries);
+  rightStack.push(rightEntries);
+  const rowState: StructureState = {
+    budget,
+    stepCap: 0,
+    chargeSteps: false,
+    steps: 0,
+    leftStack,
+    rightStack,
+  };
+  const canEnsure = typeof budget.ensure === "function";
+  const len = rightEntries.length;
+  const compareRow = (leftRow: unknown, rightRow: unknown): boolean => {
+    if (canEnsure) budget.ensure(1, "prepare");
+    const rowCharge =
+      1 + entryContentUnits(leftRow, canEnsure ? budget : undefined, "prepare");
+    budget.reserve(rowCharge, "prepare");
+    rowState.steps = 0;
+    rowState.stepCap = 40 + 6 * rowCharge;
+    return sameStructuredValue(leftRow, rightRow, rowState, 2);
+  };
+
+  if (
+    entryKeysB.length === len + 1 &&
+    entryKeysB[len] === "length" &&
+    entryKeysA[len] === "length"
+  ) {
+    for (let i = 0; i < len; i++) {
+      if (!compareRow(leftEntries[i], rightEntries[i])) return false;
+    }
+    return true;
+  }
+
+  const leftEntriesRecord = leftEntries as unknown as Record<
+    PropertyKey,
+    unknown
+  >;
+  const rightEntriesRecord = rightEntries as unknown as Record<
+    PropertyKey,
+    unknown
+  >;
+  for (let i = 0; i < entryKeysB.length; i++) {
+    const key = entryKeysB[i];
+    if (key === "length") continue;
+    if (entryKeysA[i] !== key && !Object.hasOwn(leftEntries, key)) return false;
+    if (typeof key === "string" && /^\d+$/.test(key)) {
+      if (!compareRow(leftEntriesRecord[key], rightEntriesRecord[key]))
+        return false;
+    } else {
+      if (headerState.steps + 1 > headerState.stepCap) return false;
+      headerState.steps++;
+      if (
+        !sameStructuredValue(
+          leftEntriesRecord[key],
+          rightEntriesRecord[key],
+          headerState,
+          2,
+        )
+      )
+        return false;
+    }
+  }
+  return true;
 }
 
 /**
  * Content equality between a freshly read package clone and a trusted
  * validated snapshot. List shapes pass the shared unbudgeted
  * `requirePackageListShapes` check before any budget charge, and the remaining
- * value comparison charges the request budget within a hard work cap.
+ * value comparison walks both copies per reference with exact container
+ * prototypes and charges the same per-row units as the cold path.
  */
 export function samePackageStructure(
   incoming: unknown,
   trusted: CachedPackage,
   budget: SearchRequestBudget,
-  workCap?: number,
 ): boolean {
-  if (incoming === trusted) return true;
-  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
+  if (
+    !incoming ||
+    !trusted ||
+    typeof incoming !== "object" ||
+    typeof trusted !== "object" ||
+    Array.isArray(incoming) ||
+    Array.isArray(trusted)
+  )
+    return false;
+  const rootProtoA = Object.getPrototypeOf(incoming);
+  const rootProtoB = Object.getPrototypeOf(trusted);
+  if (
+    rootProtoA !== rootProtoB ||
+    (rootProtoA !== Object.prototype && rootProtoA !== null)
+  )
     return false;
   requirePackageListShapes(incoming);
-  return sameValidatedPackageStructure(incoming, trusted, budget, workCap);
+  return sameValidatedPackageStructure(incoming, trusted, budget);
 }
 
 function dropSnapshot(current: Client, key: number): void {
@@ -671,7 +752,7 @@ export async function searchPackage(
     // Fresh clone with the same durable storage revision: validate all outer
     // and nested list shapes before any budgeted equality or transfer work,
     // then reuse only after content equality against a confirmed retained
-    // snapshot within the hard comparison work cap (most recent first).
+    // snapshot (checking most recently retained snapshots first).
     if (matchedKey === undefined) {
       requirePackageListShapes(pkg);
       if (storageHint !== undefined) {
@@ -681,12 +762,7 @@ export async function searchPackage(
             entry &&
             entry.language === language &&
             entry.storageHint === storageHint &&
-            sameValidatedPackageStructure(
-              pkg,
-              entry.pkg,
-              clientBudget,
-              COMPARISON_WORK_FACTOR * entry.distinctSize,
-            )
+            sameValidatedPackageStructure(pkg, entry.pkg, clientBudget)
           ) {
             matchedKey = candidateKey;
             resolvedPkg = entry.pkg;
@@ -709,12 +785,10 @@ export async function searchPackage(
     const request = ++requestId;
     // Announce a transfer without evicting any confirmed warm package.
     if (prepare) {
-      const existing = current.snapshots.get(key);
       current.snapshots.set(key, {
         pkg: resolvedPkg,
         language,
         storageHint,
-        distinctSize: existing?.distinctSize ?? 8,
       });
       let byLang = current.byPackage.get(resolvedPkg);
       if (!byLang) {
@@ -791,103 +865,12 @@ export async function searchPackage(
           if (force) requirePackageListShapes(resolvedPkg);
           if (resolvedPkg.entries.length) clientBudget.ensure(1, "prepare");
           const checkedLists = savedRowListCache();
-          let distinctSize =
-            8 +
-            stringUnits(resolvedPkg.snapshot) +
-            stringUnits(resolvedPkg.search_view) +
-            stringUnits(resolvedPkg.downgrade);
-          let seenEntries: Set<object> | undefined;
-          let seenCollections: Map<object, number> | undefined;
           for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
             requireSavedRowLists(entry, clientBudget, true, checkedLists);
             const content = entryContentUnits(entry, clientBudget, "prepare");
             clientBudget.reserve(1 + content, "prepare");
-            if (!entry || typeof entry !== "object") {
-              distinctSize += 24;
-              continue;
-            }
-            if (seenEntries?.has(entry)) {
-              distinctSize += 1;
-              continue;
-            }
-            if (content >= 16) (seenEntries ??= new Set()).add(entry);
-            let rowSize = 24 + content;
-            const glosses = Array.isArray(entry.glosses) ? entry.glosses : null;
-            if (glosses && glosses.length > 0) {
-              if (glosses.length >= 4) {
-                const prev = seenCollections?.get(glosses);
-                if (prev !== undefined) {
-                  rowSize -= prev;
-                } else {
-                  const glossUnits = Math.min(glosses.length, 8192);
-                  rowSize += 3 * glossUnits;
-                  (seenCollections ??= new Map()).set(glosses, glossUnits);
-                }
-              } else {
-                rowSize += 3 * glosses.length;
-              }
-            }
-            const classification = entry.classification;
-            const selmaho =
-              classification &&
-              typeof classification === "object" &&
-              Array.isArray(classification.selmaho)
-                ? classification.selmaho
-                : null;
-            if (selmaho && selmaho.length >= 4) {
-              const prev = seenCollections?.get(selmaho);
-              if (prev !== undefined) {
-                rowSize -= prev;
-              } else {
-                (seenCollections ??= new Map()).set(selmaho, selmaho.length);
-              }
-            }
-            const rawRafsi = (entry as { rafsi?: unknown }).rafsi;
-            const rafsi = Array.isArray(rawRafsi) ? rawRafsi : null;
-            if (rafsi && rafsi.length >= 4) {
-              const prev = seenCollections?.get(rafsi);
-              if (prev !== undefined) {
-                rowSize -= prev;
-              } else {
-                (seenCollections ??= new Map()).set(
-                  rafsi,
-                  Math.min(rafsi.length, 64),
-                );
-              }
-            }
-            const attribution = (entry as { attribution?: unknown })
-              .attribution;
-            const dates =
-              attribution && typeof attribution === "object"
-                ? (attribution as { dates?: unknown }).dates
-                : undefined;
-            if (dates && typeof dates === "object" && content >= 16) {
-              const prev = seenCollections?.get(dates);
-              if (prev !== undefined) {
-                rowSize -= prev;
-              } else {
-                let dateCount = 0;
-                let dateChars = 0;
-                for (const day in dates as Record<string, unknown>) {
-                  if (!Object.hasOwn(dates, day)) continue;
-                  dateCount++;
-                  dateChars += day.length;
-                  const val = (dates as Record<string, unknown>)[day];
-                  if (typeof val === "string") dateChars += val.length;
-                }
-                if (dateCount >= 4 || dateChars > 64) {
-                  (seenCollections ??= new Map()).set(
-                    dates,
-                    dateCount + Math.floor(dateChars / 64),
-                  );
-                }
-              }
-            }
-            distinctSize += Math.max(24, rowSize);
           }
-          const snapshot = current.snapshots.get(key);
-          if (snapshot) snapshot.distinctSize = distinctSize;
         }
         current.worker.postMessage({
           request,
