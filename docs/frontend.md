@@ -78,7 +78,7 @@ The client accepts every answer that a home server computes. Examples are word a
 The client does not need to recompute or cross-check these answers to check the server.
 A home-server answer can have a valid shape and still hold content that the server's own code cannot produce. A finding that needs such content is not a defect.
 The shape of an answer is its field types, its required fields, and the references between parts of that one answer.
-A reference to a part that the answer does not hold is a wrong shape. The page then shows that part as unavailable.
+A reference to a part that the answer does not hold is a wrong shape. The client then rejects the answer or shows that part as unavailable.
 The client checks the shape of each answer that it processes or renders. An answer with a wrong shape must not crash the page.
 A proxy error or a version mismatch can cause such an answer. A crash on a wrong shape is a defect.
 
