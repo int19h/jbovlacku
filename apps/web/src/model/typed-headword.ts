@@ -27,6 +27,7 @@ import type {
   Compound,
   Formation,
   LexicalKind,
+  PackageEntry,
   PackageEntryV2,
 } from "./types.ts";
 import type { Draft } from "./draft.ts";
@@ -764,36 +765,25 @@ export function sourceOptions(
     if (rafsiMatches) for (const plain of rafsiMatches) matchedPlains.add(plain);
   }
   if (!matchedPlains.size) return [];
-  const matchedRows: IndexedSourceRow[] = [];
-  for (const plain of matchedPlains) {
-    const rows = index.byPlain.get(plain);
-    if (rows) for (let i = 0; i < rows.length; i++) matchedRows.push(rows[i]);
+  // Each byPlain bucket is already in ascending package event order. Walk each
+  // matched bucket directly instead of joining and sorting all matching rows on
+  // every call, and group all rows that share a canonical word ID before
+  // enforcing the 128-byte component spelling limit so an over-long alias does
+  // not drop its claims when another alias of the same word fits.
+  interface WordAccumulator {
+    firstIndex: number;
+    lastIndex: number;
+    component: LujvoComponentState;
+    buckets: IndexedSourceRow[][];
+    extraRows?: IndexedSourceRow[];
   }
-  if (matchedPlains.size > 1) matchedRows.sort((a, b) => a.index - b.index);
-  // Group all rows that share a canonical word ID before enforcing the 128-byte
-  // component spelling limit, so an over-long alias does not drop its claims
-  // when another alias of the same word fits.
-  const words = new Map<string, LujvoComponentState>();
-  for (let i = 0; i < matchedRows.length; i++) {
-    const entry = matchedRows[i].entry;
+  const addRow = (
+    component: LujvoComponentState,
+    identity: string,
+    entry: PackageEntry,
+  ) => {
     const spelling = entry.word.spelling;
-    const listed =
-      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
-    const identity = wordId(entry.word);
-    let component = words.get(identity);
-    if (!component) {
-      component = {
-        id: componentId(),
-        spelling,
-        kind: entry.classification.kind,
-        definition: null,
-        definitions: [],
-        gloss: entry.glosses[0]?.text ?? "",
-        locked: part.text,
-        claims: [],
-      };
-      words.set(identity, component);
-    } else if (
+    if (
       !fitsComponentSpelling(component.spelling) &&
       fitsComponentSpelling(spelling)
     ) {
@@ -803,6 +793,8 @@ export function sourceOptions(
       event: entry.event,
       summary: entry.plain_text,
     });
+    const listed =
+      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
     for (const rafsi of listed)
       if (!component.claims.some((claim) => claim.rafsi === rafsi)) {
         if (
@@ -812,10 +804,77 @@ export function sourceOptions(
           throw new PackageValidationError();
         component.claims.push({ rafsi, pair: rafsiPairId(identity, rafsi) });
       }
+  };
+  const words = new Map<string, WordAccumulator>();
+  for (const plain of matchedPlains) {
+    const rows = index.byPlain.get(plain);
+    if (!rows) continue;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const entry = row.entry;
+      const identity = wordId(entry.word);
+      const existing = words.get(identity);
+      if (!existing) {
+        const component: LujvoComponentState = {
+          id: componentId(),
+          spelling: entry.word.spelling,
+          kind: entry.classification.kind,
+          definition: null,
+          definitions: [],
+          gloss: entry.glosses[0]?.text ?? "",
+          locked: part.text,
+          claims: [],
+        };
+        addRow(component, identity, entry);
+        words.set(identity, {
+          firstIndex: row.index,
+          lastIndex: row.index,
+          component,
+          buckets: [rows],
+        });
+      } else if (!existing.extraRows && row.index > existing.lastIndex) {
+        if (existing.buckets[existing.buckets.length - 1] !== rows)
+          existing.buckets.push(rows);
+        addRow(existing.component, identity, entry);
+        existing.lastIndex = row.index;
+      } else {
+        if (!existing.extraRows) {
+          existing.extraRows = existing.buckets.flatMap((bucket) =>
+            bucket.filter(
+              (candidate) => wordId(candidate.entry.word) === identity,
+            ),
+          );
+        }
+        existing.extraRows.push(row);
+      }
+    }
   }
-  return [...words.values()].filter(fitsSavedComponent).sort((a, b) =>
-    a.spelling.localeCompare(b.spelling),
-  );
+  for (const [identity, acc] of words) {
+    if (!acc.extraRows) continue;
+    acc.extraRows.sort((a, b) => a.index - b.index);
+    const first = acc.extraRows[0];
+    const component: LujvoComponentState = {
+      id: acc.component.id,
+      spelling: first.entry.word.spelling,
+      kind: first.entry.classification.kind,
+      definition: null,
+      definitions: [],
+      gloss: first.entry.glosses[0]?.text ?? "",
+      locked: part.text,
+      claims: [],
+    };
+    for (const row of acc.extraRows) addRow(component, identity, row.entry);
+    acc.firstIndex = first.index;
+    acc.component = component;
+  }
+  return [...words.values()]
+    .filter((acc) => fitsSavedComponent(acc.component))
+    .sort(
+      (a, b) =>
+        a.component.spelling.localeCompare(b.component.spelling) ||
+        a.firstIndex - b.firstIndex,
+    )
+    .map((acc) => acc.component);
 }
 
 /** Hydrate exact rafsi and boundaries. A missing source stays explicitly unresolved. */

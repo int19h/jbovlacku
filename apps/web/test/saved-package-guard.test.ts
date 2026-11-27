@@ -2477,3 +2477,195 @@ test("lujvo ordinary Add selects a fitting alias spelling in either row order an
     }
   }
 });
+
+test("lujvo overlong exact hit labels the 128-byte limit without rescanning entries or hashing the package, and keeps late aliases eligible", async ({
+  page,
+}) => {
+  const shortSpelling = "ba".repeat(43) + "n";
+  const longSpelling = "bá".repeat(43) + "n";
+  const snapshot = "sha256:" + "a".repeat(64);
+  const view = "jve1:" + "b".repeat(64);
+  const hashJson = async (text: string) => {
+    const { createHash } = await import("node:crypto");
+    return "sha256:" + createHash("sha256").update(text).digest("hex");
+  };
+  const seedPackage = async (spellings: string[]) => {
+    const rows = await Promise.all(
+      spellings.map(async (sp, i) => ({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo" as const, spelling: sp },
+        language: "en",
+        glosses: [{ language: "en", text: "shared book", sense: null }],
+        plain_text: "shared book",
+        classification: { kind: "cmevla" as const, selmaho: [] as string[] },
+        body: await hashJson(`example-${i}`),
+        rafsi: ["bab"],
+        rafsi_complete: true,
+        attribution: null,
+        notes: false,
+        issuer: "ed25519:" + "a".repeat(64),
+        search_status: "active" as const,
+      })),
+    );
+    const parts: { data: string; hash: string; bytes: number; count: number }[] =
+      [];
+    for (let i = 0; i < rows.length; i += 1024) {
+      const slice = rows.slice(i, i + 1024);
+      const data = JSON.stringify(slice);
+      parts.push({
+        data,
+        hash: await hashJson(data),
+        bytes: Buffer.byteLength(data),
+        count: slice.length,
+      });
+    }
+    const pkgBody = JSON.stringify({
+      version: 2,
+      language: "en",
+      snapshot,
+      search_view: view,
+      parts: parts.map(({ data: _d, ...meta }) => meta),
+    });
+    const descriptor = {
+      version: 2,
+      language: "en",
+      hash: await hashJson(pkgBody),
+      bytes: Buffer.byteLength(pkgBody),
+    };
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const body = path.endsWith("/manifest")
+        ? JSON.stringify({
+            snapshot,
+            view,
+            packages: [],
+            package_versions: [descriptor],
+          })
+        : path.endsWith("/packages/en")
+          ? pkgBody
+          : path.includes("/package-parts/")
+            ? (parts.find((p) => decodeURIComponent(path).includes(p.hash))
+                ?.data ?? null)
+            : null;
+      await route.fulfill({
+        status: body ? 200 : 503,
+        contentType: "application/json",
+        body: body ?? "{}",
+      });
+    });
+    await page.route("**/src/data/search.ts*", async (route) => {
+      const response = await route.fetch();
+      const body = (await response.text()).replaceAll(
+        "identify(row.word)",
+        "((globalThis.__r16Identify = (globalThis.__r16Identify ?? 0) + 1), identify(row.word))",
+      );
+      await route.fulfill({ response, body });
+    });
+    await page.route("**/src/pages/wizard/lujvo.ts*", async (route) => {
+      const response = await route.fetch();
+      const body = (await response.text()).replaceAll(
+        "fitsComponentSpelling(row.word.spelling)",
+        "((globalThis.__r16LujvoFitScan = (globalThis.__r16LujvoFitScan ?? 0) + 1), fitsComponentSpelling(row.word.spelling))",
+      );
+      await route.fulfill({ response, body });
+    });
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { downloadPackage } = await import(String("/src/data/search.ts"));
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      const got = await downloadPackage("en");
+      const store = new LocalStore();
+      await store.put("packages", "en", got);
+      await store.put(
+        "drafts",
+        "current",
+        newDraft({ kind: "lujvo", meaning: "keep this meaning", step: 3 }),
+      );
+    });
+  };
+
+  // Case 1: 1,024 overlong entries only -> direct truthful label, zero rescans, zero package-wide index builds.
+  await seedPackage(Array.from({ length: 1024 }, () => longSpelling));
+  await page.goto("/new/lujvo");
+  await page.evaluate(() => {
+    (globalThis as any).__r16Identify = 0;
+    (globalThis as any).__r16LujvoFitScan = 0;
+  });
+  await page.getByLabel("Add a part").fill(shortSpelling);
+  const list = page.getByRole("list", { name: "Matching words" });
+  await expect(
+    list.getByRole("button", {
+      name: `Add ${shortSpelling} as entered`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    list.getByText("listed spelling exceeds the 128-byte builder limit"),
+  ).toBeVisible();
+  await expect(list.getByText("no exact match in these results")).toHaveCount(
+    0,
+  );
+  const counters = await page.evaluate(() => ({
+    identify: (globalThis as any).__r16Identify ?? 0,
+    lujvoFitScan: (globalThis as any).__r16LujvoFitScan ?? 0,
+  }));
+  expect(counters).toEqual({ identify: 0, lujvoFitScan: 0 });
+
+  // Case 2: fitting alias after the first 1,000 overlong entries stays eligible for ordinary Add.
+  await seedPackage([
+    ...Array.from({ length: 1005 }, () => longSpelling),
+    shortSpelling,
+  ]);
+  await page.goto("/new/lujvo");
+  await page.getByLabel("Add a part").fill(shortSpelling);
+  await expect(
+    list.getByRole("button", { name: `Add ${shortSpelling}`, exact: true }),
+  ).toBeVisible();
+});
+
+test("a valid rafsi pair URL shows Shared core unavailable immediately when Wasm fails and cancels a held manifest request", async ({
+  page,
+}) => {
+  let markManifestArrived!: () => void;
+  const manifestArrived = new Promise<void>((resolve) => {
+    markManifestArrived = resolve;
+  });
+  let releaseManifest!: () => void;
+  const manifestHeld = new Promise<void>((resolve) => {
+    releaseManifest = resolve;
+  });
+  let manifestAborted = false;
+  page.on("requestfailed", (req) => {
+    if (new URL(req.url()).pathname.endsWith("/api/v1/manifest")) {
+      manifestAborted = true;
+    }
+  });
+  // Fail Wasm only after /api/v1/manifest is in flight and held open, so the
+  // test verifies both immediate error rendering and aborting the active fetch.
+  await page.route("**/*.wasm*", async (route) => {
+    await manifestArrived;
+    await route.abort();
+  });
+  await page.route("**/api/v1/manifest*", async (route) => {
+    markManifestArrived();
+    await manifestHeld;
+    await route.fulfill({ status: 503, body: "{}" }).catch(() => {});
+  });
+  try {
+    await page.goto(`/rafsi-pair/jvr1:${"a".repeat(64)}`, {
+      waitUntil: "domcontentloaded",
+    });
+    // Must show the core error immediately while /api/v1/manifest is still held open.
+    await expect(
+      page.getByRole("heading", { name: "Shared core unavailable" }),
+    ).toBeVisible({ timeout: 3000 });
+    await expect
+      .poll(() => manifestAborted, { timeout: 2000 })
+      .toBe(true);
+  } finally {
+    markManifestArrived();
+    releaseManifest();
+  }
+});

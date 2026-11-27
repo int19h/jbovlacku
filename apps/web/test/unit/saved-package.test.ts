@@ -2407,3 +2407,117 @@ test("structured-cloned packages keep exact dense-list, plain-date, and hex ID c
     }, saved.PackageValidationError);
   }
 });
+
+test("resolvePackageHits records the first fitting alias beyond HIT_CONTENT_LIMIT while mapping entries once", async () => {
+  const { resolvePackageHits } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const shortSpelling = "ba".repeat(43) + "n";
+  const longSpelling = "bá".repeat(43) + "n";
+  const entries = [
+    ...Array.from({ length: 1005 }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling: longSpelling },
+        classification: { kind: "cmevla", selmaho: [] },
+        rafsi: ["bab"],
+      }),
+    ),
+    v2Row({
+      event: "jve1:" + (1006).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: shortSpelling },
+      classification: { kind: "cmevla", selmaho: [] },
+      rafsi: ["bab"],
+    }),
+  ];
+  const cached = pkg(entries) as any;
+  const indices = entries.map((_, i) => i);
+  const id = wordId({ language: "jbo", spelling: shortSpelling });
+  const pages = resolvePackageHits(
+    cached,
+    [
+      [
+        {
+          word_id: id,
+          match: "headword",
+          entries: indices,
+          definitions: indices,
+          preview: 0,
+        },
+      ],
+    ],
+    SearchRequestBudget.for(searchMetrics()),
+  );
+  assert.equal((pages[0][0] as any).fittingEntry?.word.spelling, shortSpelling);
+});
+
+test("sourceOptions keeps event order across interleaved competing claims without sorting all matching rows", async () => {
+  const { sourceOptions } = await import("../../src/model/typed-headword.ts");
+  const cv = ["ba", "be", "bi", "bo", "bu", "ca", "ce", "ci"];
+  const names = Array.from(
+    { length: 64 },
+    (_, i) => cv[Math.floor(i / 8)] + cv[i % 8] + "n",
+  );
+  const entries: any[] = [];
+  for (let d = 0; d < 64; d++) {
+    for (let n = 0; n < 64; n++) {
+      const idx = entries.length + 1;
+      entries.push(
+        v2Row({
+          event: "jve1:" + idx.toString(16).padStart(64, "0"),
+          word: { language: "jbo", spelling: names[n] },
+          classification: { kind: "cmevla", selmaho: [] },
+          rafsi: ["bab"],
+        }),
+      );
+    }
+  }
+  const cached = pkg(entries) as any;
+  for (let call = 0; call < 2; call++) {
+    let rowComparisons = 0;
+    let wordComparisons = 0;
+    const originalSort = Array.prototype.sort;
+    Array.prototype.sort = function (compareFn?: (a: any, b: any) => number) {
+      return originalSort.call(
+        this,
+        compareFn &&
+          ((a: any, b: any) => {
+            if (this.length > 64) rowComparisons++;
+            else wordComparisons++;
+            return compareFn(a, b);
+          }),
+      );
+    };
+    let result: ReturnType<typeof sourceOptions>;
+    try {
+      result = sourceOptions(
+        { text: "bab", kind: "rafsi", join_before: null },
+        cached,
+      );
+    } finally {
+      Array.prototype.sort = originalSort;
+    }
+    assert.equal(result.length, 64);
+    assert.equal(
+      rowComparisons,
+      0,
+      `call ${call}: expected 0 per-row sort comparisons, got ${rowComparisons}`,
+    );
+    assert.ok(wordComparisons > 0 && wordComparisons <= 64 * 7);
+    assert.deepEqual(
+      result.map((o) => o.spelling),
+      [...names].sort((a, b) => a.localeCompare(b)),
+    );
+    for (const option of result) {
+      assert.equal(option.definitions?.length, 64);
+      for (let i = 1; i < option.definitions!.length; i++) {
+        assert.ok(
+          option.definitions![i - 1].event < option.definitions![i].event,
+        );
+      }
+    }
+  }
+});

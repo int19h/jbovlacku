@@ -1,5 +1,6 @@
 import { packageStorageKey } from "./store.ts";
 import {
+  fitsComponentSpelling,
   PackageValidationError,
   requirePackageListShapes,
   requireSavedRowLists,
@@ -919,9 +920,13 @@ export function resolvePackageHits(
     rows.map((hit) => {
       budget.reserve(1, "search");
       const selected = pkg.entries[hit.preview];
+      let fittingEntry: PackageEntry | null = null;
       const entries = hit.entries.map((index) => {
         budget.reserve(1, "search");
-        return pkg.entries[index];
+        const entry = pkg.entries[index];
+        if (fittingEntry === null && fitsComponentSpelling(entry.word.spelling))
+          fittingEntry = entry;
+        return entry;
       });
       const definitions = hit.definitions.map((index) => {
         budget.reserve(1, "search");
@@ -933,6 +938,7 @@ export function resolvePackageHits(
         match: hit.match,
         word: selected.word,
         entries,
+        fittingEntry,
         definitions,
         preview: {
           event: selected.event,

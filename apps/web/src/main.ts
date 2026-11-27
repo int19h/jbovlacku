@@ -253,8 +253,33 @@ async function start() {
     try {
       const head = route.segments[0] ?? "";
       if (head === "rafsi-pair") {
-        await rafsiPairPage(route, context, app, coreReady);
-        if (coreError && current === revision) renderCoreUnavailable();
+        if (coreError) {
+          renderCoreUnavailable();
+          return;
+        }
+        const pairController = new AbortController();
+        const abortPair = () => pairController.abort();
+        signal.addEventListener("abort", abortPair, { once: true });
+        const pairContext: RenderContext = {
+          ...context,
+          live: () => current === revision && !pairController.signal.aborted,
+          signal: pairController.signal,
+        };
+        const pageDone = rafsiPairPage(route, pairContext, app, coreReady);
+        // Prevent an unhandled rejection if the page rejects before coreReady settles.
+        pageDone.catch(() => {});
+        const ok = await coreReady;
+        if (!ok) {
+          pairController.abort();
+          signal.removeEventListener("abort", abortPair);
+          if (current === revision) renderCoreUnavailable();
+          return;
+        }
+        try {
+          await pageDone;
+        } finally {
+          signal.removeEventListener("abort", abortPair);
+        }
         return;
       }
       await coreReady;

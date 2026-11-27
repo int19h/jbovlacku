@@ -395,8 +395,8 @@ A rafsi lookup downloads the current package for each of its languages. When bro
 A saved package list must have a value at every index and no extra properties.
 This rule covers entries, glosses, selma'o names, and rafsi.
 Attribution dates form a map from names to strings.
-Client transfer, structural reuse comparison, the search worker, Settings, `/rafsi` and `/claim` lookups, and the conflict inventory check the outer `entries` list and every row's `glosses`, `selmaho`, and `rafsi` lists in one pass before any budget charge or content measurement.
-The rafsi pair route and `packageWordEntries` (`createPackageWordIndex`) have no request budget, check the outer `entries` list up front, check each row's nested lists during the row walk, and withhold all results if any row fails.
+Client transfer, structural reuse comparison, the search worker, Settings, the saved version 1 check in rafsi package loading, `/rafsi` and `/claim` lookups, and the conflict inventory check the outer `entries` list and every row's `glosses`, `selmaho`, and `rafsi` lists in one pass before any budget charge or content measurement.
+Saved version 2 packages on the rafsi pair route and `packageWordEntries` (`createPackageWordIndex`) have no request budget, check the outer `entries` list up front, check each row's nested lists during the row walk, and withhold all results if any row fails.
 For lists with a format cap (`glosses` up to 8,192 items and `rafsi` up to 64 items), the list check rejects an over-cap length before inspecting own keys.
 For lists without a format cap (`entries` and `selmaho`), and for capped lists within their cap, the list check inspects actual own keys rather than sampling indices, so any hole, extra own property, or sparse huge length rejects the entire package as invalid rather than reporting a budget failure.
 After that list-shape pass succeeds, the worker and client transfer charge per-row content work to the request budget, checking each row's own field shapes before charging that row and metering uncapped `selmaho` lists and attribution date maps, while direct readers apply the same row rules without a request budget.

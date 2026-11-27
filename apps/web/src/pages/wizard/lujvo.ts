@@ -398,9 +398,12 @@ export async function lujvoPage(
     }
     if (!current()) return;
     for (const hit of hits) {
-      const fittingEntry = hit.entries.find((row) =>
-        fitsComponentSpelling(row.word.spelling),
-      );
+      const fittingEntry =
+        hit.fittingEntry !== undefined
+          ? hit.fittingEntry
+          : (hit.entries.find((row) =>
+              fitsComponentSpelling(row.word.spelling),
+            ) ?? null);
       const entry = fittingEntry ?? hit.entries[0];
       const displaySpelling = fittingEntry
         ? fittingEntry.word.spelling
@@ -500,15 +503,19 @@ export async function lujvoPage(
         ? normalizeAcuteDisplay(query)
         : analysis.normalized
       : null;
-    const hasExactHit =
-      queryIdentity !== null && hits.some((h) => h.word_id === queryIdentity);
-    const hasUsableExactHit =
-      queryIdentity !== null &&
-      hits.some(
-        (h) =>
-          h.word_id === queryIdentity &&
-          h.entries.some((row) => fitsComponentSpelling(row.word.spelling)),
-      );
+    const exactHit =
+      queryIdentity !== null
+        ? hits.find((h) => h.word_id === queryIdentity)
+        : undefined;
+    const hasExactHit = Boolean(exactHit);
+    const hasUsableExactHit = Boolean(
+      exactHit &&
+        (exactHit.fittingEntry !== undefined
+          ? exactHit.fittingEntry
+          : exactHit.entries.find((row) =>
+              fitsComponentSpelling(row.word.spelling),
+            )),
+    );
     if (
       enteredSpelling &&
       queryIdentity &&
@@ -538,10 +545,12 @@ export async function lujvoPage(
       const lookup =
         !answered || !selected
           ? "local dictionary lookup is unavailable"
-          : packageWordEntries(selected.pkg, selected.language, queryIdentity)
-                .length
-            ? "no exact match in these results"
-            : "not in the local package";
+          : hasExactHit
+            ? "listed spelling exceeds the 128-byte builder limit"
+            : packageWordEntries(selected.pkg, selected.language, queryIdentity)
+                  .length
+              ? "no exact match in these results"
+              : "not in the local package";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
         text(` ${kindLabel(kind)}, ${lookup}`, "meta"),

@@ -82,6 +82,7 @@ async function packageFor(
         ).includes(language);
     }
   }
+  if (signal.aborted) return null;
   // Prefer the server's current package so new claims appear. Fall back to the cache.
   try {
     const fresh = await downloadPackage(language, { signal, onVersion2Entry });
@@ -94,6 +95,7 @@ async function packageFor(
       return { pkg: fresh, fresh: true };
     }
   } catch {}
+  if (signal.aborted) return null;
   if (!app.session.storageAvailable)
     return fallback && { pkg: fallback, fresh: true };
   // A storage failure counts as no saved package. An unusable saved

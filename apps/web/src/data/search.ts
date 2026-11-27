@@ -30,6 +30,7 @@ export {
 } from "../../../../packages/search/src/index.ts";
 import {
   fields,
+  fitsComponentSpelling,
   isV2,
   PACKAGE_RAFSI_LIMIT,
   PackageValidationError,
@@ -492,6 +493,8 @@ async function downloadEntries(
 export interface LocalHit extends SearchHit {
   /** Every matching entry of the word, strongest first. */
   entries: PackageEntry[];
+  /** First entry whose spelling fits the 128-byte lujvo builder limit, or null when none fits. */
+  fittingEntry?: PackageEntry | null;
   matchingRafsi?: string[];
 }
 /** Groups matching entries by word, ordered by match class and stable word ID. */
@@ -566,6 +569,7 @@ export function localSearch(
       status: "unavailable",
     };
     const old = grouped.get(id);
+    const entryFits = fitsComponentSpelling(entry.word.spelling);
     if (old) {
       old.definitions.push(entry.event);
       old.entries.push(entry);
@@ -578,6 +582,7 @@ export function localSearch(
         old.position = position;
         old.preview = preview;
         old.word = entry.word;
+        if (entryFits) old.fittingEntry = entry;
         // Move the preview entry first, keeping the rest stable. Each
         // comparison costs one unit, charged before the comparison runs.
         old.entries.sort((a, b) => {
@@ -588,6 +593,8 @@ export function localSearch(
               ? 1
               : 0;
         });
+      } else if (!old.fittingEntry && entryFits) {
+        old.fittingEntry = entry;
       }
     } else {
       if (rafsi) takeRafsi(id, rafsi);
@@ -599,6 +606,7 @@ export function localSearch(
         position,
         preview,
         entries: [entry],
+        fittingEntry: entryFits ? entry : null,
         ...(rafsi ? { matchingRafsi: rafsi } : {}),
       });
     }
