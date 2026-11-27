@@ -6,7 +6,6 @@ import { el, link, icon, sr, text, append, button } from "../lib/dom.ts";
 import { navigate, routes, type Route } from "./router.ts";
 import type { Session } from "./session.ts";
 import type { DeliveryEngine } from "../data/delivery.ts";
-import { isNotDelivered } from "../data/delivery.ts";
 import { shortIdentity } from "../lib/format.ts";
 import type { OutboxItem } from "../data/store.ts";
 
@@ -164,7 +163,7 @@ export function buildShell(
   session.subscribe(renderIdentity);
   renderIdentity();
   const renderMarker = (items: OutboxItem[]) => {
-    const count = items.filter((item) => isNotDelivered(item)).length;
+    const count = items.filter((item) => delivery.isNotDelivered(item)).length;
     marker.hidden = count === 0;
     marker.replaceChildren(
       icon("warn", "", 20),
@@ -173,7 +172,7 @@ export function buildShell(
     marker.setAttribute("aria-label", `${count} not delivered`);
     marker.title = `${count} not delivered`;
   };
-  delivery.subscribe(renderMarker);
+  delivery.subscribe(renderMarker, () => {});
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
   return {
     main,

@@ -195,12 +195,25 @@ export class Signer {
     peerIds: string[] = this.session.preferences.peers.map((peer) => peer.id),
   ): Promise<OutboxItem[]> {
     const signed = await this.sign(items, peerIds);
+    // The group is saved. A delivery or storage error after this point
+    // leaves the records in the outbox, where the retry loop continues.
+    // The caller still gets the saved items, so it updates its view and
+    // does not offer to sign the same change again.
+    // Each record gets its own explicit turn. A failure of an earlier
+    // record holds only the recipients that still depend on it.
     const results: OutboxItem[] = [];
     for (const item of signed.items) {
-      const delivered = await this.delivery.deliver(item.id, true);
+      let delivered: OutboxItem | undefined;
+      try {
+        delivered = await this.delivery.deliver(item.id, true);
+      } catch {
+        // The record stays in the outbox with its own retry.
+      }
+      if (!delivered)
+        delivered = await this.session.store
+          .get<OutboxItem>("outbox", item.id)
+          .catch(() => undefined);
       results.push(delivered ?? item);
-      const action = item.label;
-      void action;
     }
     for (const item of items)
       if (typeof item.action.word === "string") forgetWord(item.action.word);

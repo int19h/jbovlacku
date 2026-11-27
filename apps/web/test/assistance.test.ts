@@ -4372,7 +4372,7 @@ test("publishing an AI-created revision keeps earlier draft recovery without a c
   await acceptFirstSignature(page);
   await expect(
     page.getByRole("region", { name: "Saved publication", exact: true }),
-  ).toContainText("Saved. Not delivered yet.");
+  ).toContainText("Saved. Outcome unconfirmed.");
   const publication = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const records = await new LocalStore().list("outbox");

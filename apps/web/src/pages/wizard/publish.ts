@@ -45,7 +45,6 @@ import {
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
-import { describePeer, isNotDelivered } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
   labelIndex,
@@ -839,11 +838,20 @@ export async function publishPage(
             bindSaved();
             app.own.invalidate();
             renderSaved(signed.items);
+            // Each saved record gets its own explicit turn. The first
+            // failure is reported after the others had theirs.
             const results: OutboxItem[] = [];
+            let failure: { error: unknown } | undefined;
             for (const item of signed.items) {
-              const delivered = await app.delivery.deliver(item.id, true);
+              const delivered = await app.delivery
+                .deliver(item.id, true)
+                .catch((error) => {
+                  failure ??= { error };
+                  return undefined;
+                });
               results.push(delivered ?? item);
             }
+            if (failure) throw failure.error;
             if (!context.live()) return;
             const definitionAccepted = results.some(
               (item) =>
@@ -945,31 +953,63 @@ export async function publishPage(
     renderSaved(undefined, published.ids);
   }
 }
-/** The values that the saved group actually shows. Retry timestamps stay private to delivery. */
-function savedGroupState(items: OutboxItem[]) {
-  const unfinished = items.filter((item) =>
-    Object.values(item.peers).some((peer) => peer.state !== "accepted"),
-  );
-  const failed = unfinished.some((item) => isNotDelivered(item));
-  const sending = unfinished.length > 0 && !failed;
+/** The values that the saved group actually shows. Every fact comes from the delivery summary. */
+export function savedGroupState(
+  items: OutboxItem[],
+  delivery: App["delivery"],
+  expected = items.length,
+) {
+  const views = new Map(items.map((item) => [item, delivery.view(item)]));
+  const unfinished = items.filter((item) => !views.get(item)!.delivered);
+  const pending = unfinished.map((item) => views.get(item)!);
+  // A saved ID whose row is gone is no evidence of delivery.
+  const missing = Math.max(0, expected - items.length);
+  const saving = pending.some((view) => view.saving);
+  const unconfirmed = pending.filter((view) => view.unconfirmed);
+  const failed = missing > 0 || pending.some((view) => view.notDelivered);
+  const sending = !failed && pending.some((view) => view.sending);
   const labels = labelIndex(items);
   return {
     unfinished,
     failed,
     sending,
-    headline: sending
-      ? "Saved. Sending."
-      : unfinished.length
-        ? "Saved. Not delivered yet."
-        : "Published.",
-    explanation: sending
-      ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
-      : unfinished.length
-        ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead.`
-        : `All ${items.length} signed records were accepted.`,
+    headline: !items.length
+      ? "Saved. Delivery state unavailable."
+      : missing
+        ? "Saved. Some records are missing here."
+        : sending
+          ? "Saved. Sending."
+          : saving
+            ? "Saved. A delivery result still needs saving."
+            : unconfirmed.length
+              ? "Saved. Outcome unconfirmed."
+              : unfinished.length
+                ? failed
+                  ? "Saved. Not delivered yet."
+                  : "Saved. Waiting to send."
+                : "Published.",
+    explanation: !items.length
+      ? "This browser could not find these signed records in its outbox. Open Not delivered to check them."
+      : missing
+        ? `${missing} of ${expected} signed records of this publication are no longer in this browser's outbox. This page cannot confirm their delivery.`
+        : sending
+          ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
+          : saving
+            ? "This browser could not save a delivery result yet. It keeps the exact signed bytes and keeps trying to save the result. Publishing again would create a second definition. Use the saved records to continue delivery."
+            : unconfirmed.length
+              ? unconfirmed.every((view) => view.stopped)
+                ? "This browser keeps the exact signed bytes. Automatic delivery is stopped, so it does not check the receipt until you resume or try now. Publishing again would create a second definition. Use the saved records to continue delivery."
+                : "This browser keeps the exact signed bytes and will check the receipt again when online. Publishing again would create a second definition. Use the saved records to continue delivery."
+              : unfinished.length
+                ? `${unfinished.length} of ${items.length} signed records have unfinished delivery. This browser keeps their exact bytes. Publishing again would create a second definition. Use the saved records to continue delivery.`
+                : `All ${items.length} signed records were accepted.`,
     lines: items.map((item) => {
       const label = resolvedLabel(item, labels);
-      return `${label.action} ${label.subject}: ${Object.values(item.peers).map(describePeer).join(" ")}`;
+      return `${label.action} ${label.subject}: ${Object.values(
+        views.get(item)!.peers,
+      )
+        .map((view) => view.text)
+        .join(" ")}`;
     }),
   };
 }
@@ -1010,7 +1050,7 @@ function savedPublicationView(
         : null;
     const action = focused?.dataset.savedAction;
     const items = currentItems ?? [];
-    const state = savedGroupState(items);
+    const state = savedGroupState(items, app.delivery, ids.length);
     const headline = readFailed
       ? "Saved publication could not be read."
       : !currentItems
@@ -1095,13 +1135,21 @@ function savedPublicationView(
   };
   const retry = async () => {
     if (retrying || readFailed || !currentItems || !live()) return;
-    const unfinished = savedGroupState(currentItems).unfinished;
+    const unfinished = savedGroupState(
+      currentItems,
+      app.delivery,
+      ids.length,
+    ).unfinished;
     retrying = true;
     paint();
     try {
-      for (const item of unfinished) await app.delivery.tryNow(item.id);
-    } catch (error) {
-      app.announce(describe(error));
+      // Each record gets its turn. A failure of one does not skip the rest.
+      let failure: { error: unknown } | undefined;
+      for (const item of unfinished)
+        await app.delivery.tryNow(item.id).catch((error) => {
+          failure ??= { error };
+        });
+      if (failure) app.announce(describe(failure.error));
     } finally {
       await refresh();
       retrying = false;

@@ -48,6 +48,10 @@ export class RequestError extends Error {
     message: string,
     public code: string | null = null,
     public retryAfterMs: number | null = null,
+    /** The absolute time from Retry-After, fixed when the headers arrived. */
+    public retryAt: number | null = retryAfterMs === null
+      ? null
+      : Date.now() + retryAfterMs,
   ) {
     super(message);
   }
@@ -125,17 +129,61 @@ export interface RequestOptions extends RequestInit {
   peer?: Peer;
   timeoutMs?: number;
 }
-function parseRetryAfter(value: string | null): number | null {
+/**
+ * The absolute Retry-After deadline. Seconds count from `received`, the time
+ * the headers arrived. A date is already absolute. An unrepresentable or
+ * malformed value gives null, so ordinary backoff applies.
+ */
+export function retryDeadline(
+  value: string | null,
+  received: number,
+): number | null {
   if (!value) return null;
-  if (/^\d+$/.test(value)) return Number(value) * 1000;
-  const date = Date.parse(value);
-  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+  const text = value.trim();
+  if (/^\d+$/.test(text)) {
+    const at = received + Number(text) * 1000;
+    return Number.isSafeInteger(at) ? at : null;
+  }
+  // Only the three HTTP-date forms count. Other dates, such as an ISO date
+  // that Date.parse also reads, are malformed.
+  const day = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)";
+  const month = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+  const time = "\\d{2}:\\d{2}:\\d{2}";
+  const forms = [
+    new RegExp(`^${day}, \\d{2} ${month} \\d{4} ${time} GMT$`),
+    new RegExp(
+      `^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \\d{2}-${month}-\\d{2} ${time} GMT$`,
+    ),
+    new RegExp(`^${day} ${month} [ \\d]\\d ${time} \\d{4}$`),
+  ];
+  if (!forms.some((form) => form.test(text))) return null;
+  const at = Date.parse(text.endsWith("GMT") ? text : `${text} GMT`);
+  return Number.isSafeInteger(at) ? Math.max(at, received) : null;
+}
+/** Adds the server's deadline to an error from a response that had one. */
+function withDeadline(error: unknown, retryAt: number | null): unknown {
+  if (retryAt !== null && error !== null && typeof error === "object")
+    Object.assign(error, { retryAt });
+  return error;
+}
+/** The absolute Retry-After deadline that an error carries, if any. */
+export function retryAtOf(error: unknown): number | null {
+  const at = (error as { retryAt?: unknown } | null)?.retryAt;
+  return typeof at === "number" && Number.isFinite(at) ? at : null;
 }
 export async function objectBytes(
   path: string,
   limit: number,
   options: RequestOptions = {},
 ): Promise<Uint8Array> {
+  return (await objectBytesWithDeadline(path, limit, options)).bytes;
+}
+/** Reads a response and its absolute Retry-After deadline, if it has one. */
+async function objectBytesWithDeadline(
+  path: string,
+  limit: number,
+  options: RequestOptions = {},
+): Promise<{ bytes: Uint8Array; retryAt: number | null }> {
   const peer = options.peer ?? selfPeer;
   const signals = [AbortSignal.timeout(options.timeoutMs ?? 20000)];
   if (options.signal) signals.push(options.signal);
@@ -158,20 +206,35 @@ export async function objectBytes(
     if (options.signal?.aborted) throw error;
     throw new TransportError("No connection to the server.", "offline");
   }
+  // Fix the server's deadline when the headers arrive. A later body failure
+  // keeps it.
+  const received = Date.now();
+  const retryAt = retryDeadline(response.headers.get("retry-after"), received);
   let bytes: Uint8Array;
   try {
     bytes = await readBounded(response, limit, signal);
   } catch (error) {
-    if ((error as { name?: string } | null)?.name === "QuotaExceededError")
-      throw error;
-    if ((error as { name?: string } | null)?.name === "TimeoutError")
-      throw new TransportError("The server did not answer in time.", "timeout");
-    if (options.signal?.aborted) throw error;
-    if (error instanceof TypeError)
-      throw new TransportError("No connection to the server.", "offline");
-    // An error answer keeps its status when its body is too large. The body
-    // is discarded, and the error uses the plain status message.
-    if (!(error instanceof ByteLimitError) || response.ok) throw error;
+    const name = (error as { name?: string } | null)?.name;
+    if (name === "QuotaExceededError") throw error;
+    if (response.ok) {
+      // A damaged body never proves acceptance. The deadline still holds.
+      if (name === "TimeoutError")
+        throw withDeadline(
+          new TransportError("The server did not answer in time.", "timeout"),
+          retryAt,
+        );
+      if (options.signal?.aborted) throw error;
+      if (error instanceof TypeError)
+        throw withDeadline(
+          new TransportError("No connection to the server.", "offline"),
+          retryAt,
+        );
+      throw withDeadline(error, retryAt);
+    }
+    // An error answer keeps its status and deadline when its body is too
+    // large, interrupted or late. The body is discarded, and the error uses
+    // the plain status message. A damaged body never proves acceptance.
+    if (name !== "TimeoutError" && options.signal?.aborted) throw error;
     bytes = new Uint8Array();
   }
   if (!response.ok) {
@@ -186,18 +249,48 @@ export async function objectBytes(
       response.status,
       message,
       code,
-      parseRetryAfter(response.headers.get("retry-after")),
+      retryAt === null ? null : Math.max(0, retryAt - received),
+      retryAt,
     );
   }
-  return bytes;
+  return { bytes, retryAt };
 }
 export async function api<T = unknown>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  return JSON.parse(
-    new TextDecoder().decode(await objectBytes(path, 16777216, options)),
-  ) as T;
+  return (await apiWithDeadline<T>(path, options)).value;
+}
+/** Parses a JSON answer. A parse error keeps the response's deadline. */
+async function apiWithDeadline<T>(
+  path: string,
+  options: RequestOptions,
+): Promise<{ value: T; retryAt: number | null }> {
+  const { bytes, retryAt } = await objectBytesWithDeadline(
+    path,
+    16777216,
+    options,
+  );
+  try {
+    return {
+      value: JSON.parse(new TextDecoder().decode(bytes)) as T,
+      retryAt,
+    };
+  } catch (error) {
+    throw withDeadline(error, retryAt);
+  }
+}
+/** Validates a receipt answer. An unusable receipt keeps the deadline. */
+async function receiptWithDeadline(
+  path: string,
+  options: RequestOptions,
+): Promise<Receipt> {
+  const { value, retryAt } = await apiWithDeadline(path, options);
+  try {
+    return validateReceipt(value);
+  } catch (error) {
+    throw withDeadline(error, retryAt);
+  }
 }
 /** Fetches and verifies one signed envelope. */
 export async function getEnvelope(
@@ -338,9 +431,7 @@ export function validateReceipt(value: unknown): Receipt {
   return value as unknown as Receipt;
 }
 export async function getReceipt(id: string, options: RequestOptions = {}) {
-  return validateReceipt(
-    await api(`/receipts/${encodeURIComponent(id)}`, options),
-  );
+  return receiptWithDeadline(`/receipts/${encodeURIComponent(id)}`, options);
 }
 // This page session tracks only records whose local delivery it confirmed.
 const acceptedAwaitingView = new Map<string, Receipt>();
@@ -1451,12 +1542,10 @@ export async function postEvent(
   transport: string,
   options: RequestOptions = {},
 ) {
-  return validateReceipt(
-    await api("/events", {
-      ...options,
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: transport,
-    }),
-  );
+  return receiptWithDeadline("/events", {
+    ...options,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: transport,
+  });
 }

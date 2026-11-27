@@ -50,7 +50,7 @@ export default defineConfig({
     },
     {
       name: "firefox-offline",
-      testMatch: /offline-publish\.test\.ts/,
+      testMatch: /(?:offline-publish|receipt-retry)\.test\.ts/,
       use: { browserName: "firefox" },
     },
     {

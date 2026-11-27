@@ -129,7 +129,7 @@ test("an unknown delivery outcome asks for the receipt before any retry and neve
   await expect(
     page.getByText(/The client asks whether the record arrived/),
   ).toBeVisible();
-  await expect(page.getByText(/Next try in/)).toBeVisible();
+  await expect(page.getByText(/Next receipt check in/)).toBeVisible();
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(page.getByRole("status")).toHaveText("Delivered.");
   await expect(page.getByText("No unfinished records.")).toBeVisible();
@@ -290,10 +290,15 @@ test("a permanent refusal pauses retries, Retry-After schedules the next try, an
   const attemptAt = new Date();
   await page.clock.setFixedTime(attemptAt);
   await page.getByRole("button", { name: "Try now" }).click();
-  await expect(page.getByRole("status")).toContainText("Still not delivered.");
+  // The 429 answer leaves delivery unknown, so the page calls it unconfirmed.
+  await expect(page.getByRole("status")).toContainText(
+    "Delivery is unconfirmed.",
+  );
   await page.clock.setFixedTime(new Date(attemptAt.getTime() + 30000));
   await page.reload();
-  await expect(page.getByText(/Next try in 90 seconds\./)).toBeVisible();
+  await expect(
+    page.getByText(/Next receipt check in 90 seconds\./),
+  ).toBeVisible();
   const items = await outboxItems(page);
   expect(
     items[0].peers.self.nextAttempt - items[0].peers.self.lastAttempt,

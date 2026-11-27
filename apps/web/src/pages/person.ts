@@ -557,9 +557,12 @@ function activityRow(
     if (target.startsWith("jve1:"))
       void loadRecord(target)
         .then((record) => {
-          const spelling = (record.body as { word?: { spelling?: string } } | null)?.word?.spelling;
+          const spelling = (
+            record.body as { word?: { spelling?: string } } | null
+          )?.word?.spelling;
           // The row may have left the page while the record loaded.
-          if (spelling && targetLink.isConnected) targetLink.textContent = spelling;
+          if (spelling && targetLink.isConnected)
+            targetLink.textContent = spelling;
         })
         .catch(() => {});
     node.append(
@@ -796,11 +799,8 @@ async function profileEditor(
               ]);
               app.own.invalidate();
               forgetProfile(identity);
-              const done = results.every((item) =>
-                Object.values(item.peers).every(
-                  (peer) => peer.state === "accepted",
-                ),
-              );
+              // Every record and every recipient needs an acceptance.
+              const done = deliveryAccepted(results);
               app.announce(
                 done
                   ? "The profile is signed and published."

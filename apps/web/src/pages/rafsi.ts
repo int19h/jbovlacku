@@ -3,6 +3,7 @@
  * known assignments of a rafsi across words from this server's version 2
  * search package. `/claim/<word>` signs a claim with its pair blessing.
  */
+import { deliveryAccepted } from "../data/delivery.ts";
 import {
   rafsiPairId,
   stripAcuteAccents,
@@ -624,11 +625,8 @@ export async function claimPage(
                   },
                 ]);
                 app.own.invalidate();
-                const done = results.every((item) =>
-                  Object.values(item.peers).every(
-                    (peer) => peer.state === "accepted",
-                  ),
-                );
+                // Every record and every recipient needs an acceptance.
+                const done = deliveryAccepted(results);
                 navigate(`${routes.word(spelling)}?fresh=1`);
                 app.announce(
                   done

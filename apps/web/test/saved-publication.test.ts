@@ -154,7 +154,7 @@ test("saved publication updates preserve controls and announce only a short chan
   await expect(retry).toBeVisible();
   await expect(saved.locator("[aria-live]")).toHaveCount(1);
   await expect(saved.locator("[aria-live]")).toHaveText(
-    "Saved. Not delivered yet.",
+    "Saved. Outcome unconfirmed.",
   );
   await expect(saved.locator("ul[aria-live], [aria-live] ul")).toHaveCount(0);
   await page.evaluate(() => {
@@ -258,7 +258,7 @@ for (const failure of ["draft", "metadata", "outbox"]) {
       .click();
     await expect(
       page.getByRole("region", { name: "Saved publication" }),
-    ).toContainText("Saved. Not delivered yet.");
+    ).toContainText("Saved. Outcome unconfirmed.");
     await expect(
       page.getByRole("button", { name: "Try now", exact: true }),
     ).toBeEnabled();
@@ -330,7 +330,7 @@ test("failed saved-publication notifications keep known records and safe control
     ),
   ).toBeHidden();
   await expect(saved.locator("[aria-live]")).toHaveText(
-    "Saved. Not delivered yet.",
+    "Saved. Outcome unconfirmed.",
   );
   await expect(retry).toBeEnabled();
   await expect(retry).toBeFocused();

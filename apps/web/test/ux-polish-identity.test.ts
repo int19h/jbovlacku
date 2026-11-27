@@ -74,9 +74,7 @@ test("backup test and import errors stay inline by the field", async ({
     buffer: Buffer.from(JSON.stringify(backup)),
   });
   await importForm.getByLabel("Backup passphrase").fill("wrong");
-  await restored
-    .getByRole("button", { name: "Open backup locally" })
-    .click();
+  await restored.getByRole("button", { name: "Open backup locally" }).click();
   await expect(importForm.getByRole("alert")).toHaveText(
     "This file did not unlock with that passphrase.",
   );
@@ -98,9 +96,7 @@ test("a failed import of the existing key keeps its form, alert and focus", asyn
     buffer: Buffer.from(JSON.stringify(backup)),
   });
   await form.getByLabel("Backup passphrase").fill("wrong passphrase");
-  await form
-    .getByRole("button", { name: "Open backup locally" })
-    .click();
+  await form.getByRole("button", { name: "Open backup locally" }).click();
   await expect(form.getByRole("alert")).toHaveText(
     "This file did not unlock with that passphrase.",
   );
@@ -126,9 +122,9 @@ test("unlock uses its own message and focus lands on the Unlocked status text", 
   await expect(
     page.getByText("Your backup test passed in this browser."),
   ).toBeVisible();
-  expect(
-    await page.evaluate(() => document.activeElement?.tagName),
-  ).not.toBe("BODY");
+  expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe(
+    "BODY",
+  );
 
   await page.getByRole("button", { name: "Lock", exact: true }).click();
   await expect(page.getByText("Locked", { exact: true })).toBeVisible();
@@ -138,9 +134,7 @@ test("unlock uses its own message and focus lands on the Unlocked status text", 
     "That passphrase did not unlock the key.",
   );
   await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
-  await page
-    .getByLabel("Passphrase", { exact: true })
-    .press("Enter");
+  await page.getByLabel("Passphrase", { exact: true }).press("Enter");
   await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
   expect(
     await page.evaluate(() => document.activeElement?.textContent?.trim()),
@@ -191,10 +185,12 @@ test("handover banner keeps the delivery link out of the sentence and follows de
   await expect(sign).toBeEnabled();
   await sign.click();
   const banner = page.getByRole("region", { name: "Handover status" });
-  await expect(banner).toContainText("Old key retired, acceptance waiting.");
-  await expect(
-    banner.getByRole("button", { name: "Check again" }),
-  ).toHaveCount(0);
+  await expect(banner).toContainText(
+    "Old key retired, acceptance unconfirmed.",
+  );
+  await expect(banner.getByRole("button", { name: "Check again" })).toHaveCount(
+    0,
+  );
   const sentence = banner.getByText(
     "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. Retry or resume delivery from Not delivered.",
     { exact: true },
@@ -246,7 +242,9 @@ test("a delayed banner refresh does not steal focus moved elsewhere", async ({
   await expect(sign).toBeEnabled();
   await sign.click();
   const banner = page.getByRole("region", { name: "Handover status" });
-  await expect(banner).toContainText("Old key retired, acceptance waiting.");
+  await expect(banner).toContainText(
+    "Old key retired, acceptance unconfirmed.",
+  );
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const original = LocalStore.prototype.list;
@@ -294,7 +292,9 @@ test("banner notifications restore focus to the same control", async ({
   await expect(sign).toBeEnabled();
   await sign.click();
   const banner = page.getByRole("region", { name: "Handover status" });
-  await expect(banner).toContainText("Old key retired, acceptance waiting.");
+  await expect(banner).toContainText(
+    "Old key retired, acceptance unconfirmed.",
+  );
   const notDelivered = banner.getByRole("link", { name: "Not delivered" });
   await notDelivered.focus();
   await expect(notDelivered).toBeFocused();
@@ -361,10 +361,7 @@ test("a failed newer banner read does not cancel an older successful one", async
     const trace: string[] = [];
     (window as any).traceReads = trace;
     LocalStore.prototype.list = async function (store: string) {
-      if (
-        store !== "outbox" ||
-        !new Error().stack?.includes("handoverState")
-      )
+      if (store !== "outbox" || !new Error().stack?.includes("handoverState"))
         return original.call(this, store);
       if (trace.length === 0) {
         trace.push("first started");
@@ -383,7 +380,8 @@ test("a failed newer banner read does not cancel an older successful one", async
       return original.call(this, store);
     };
   });
-  const trace = () => page.evaluate(() => (window as any).traceReads as string[]);
+  const trace = () =>
+    page.evaluate(() => (window as any).traceReads as string[]);
   await wake();
   await expect.poll(trace).toHaveLength(2);
   await wake();
@@ -408,10 +406,7 @@ test("an older banner read does not overwrite a newer shown result", async ({
     let calls = 0;
     (window as any).bannerReadCalls = () => calls;
     LocalStore.prototype.list = async function (store: string) {
-      if (
-        store !== "outbox" ||
-        !new Error().stack?.includes("handoverState")
-      )
+      if (store !== "outbox" || !new Error().stack?.includes("handoverState"))
         return original.call(this, store);
       calls++;
       if (calls === 1) {
@@ -449,9 +444,7 @@ test("stored-key unlock keeps concurrency and container errors truthful", async 
 }) => {
   const backup = await createIdentity(page);
   const messages = await page.evaluate(async () => {
-    const { createKey, unlockKey } = await import(
-      String("/src/data/keys.ts")
-    );
+    const { createKey, unlockKey } = await import(String("/src/data/keys.ts"));
     const created = await createKey("test passphrase with spaces");
     const first = unlockKey(
       created.backup,
@@ -766,9 +759,9 @@ test("successful key work removes its window focus listeners", async ({
     });
     await form.getByLabel("Backup passphrase").fill(PASSPHRASE);
     await form.getByRole("button", { name: "Open backup locally" }).click();
-    await expect(
-      page.locator("#app > [role=status]"),
-    ).toHaveText("The backup opened locally. Keep the file in a safe place.");
+    await expect(page.locator("#app > [role=status]")).toHaveText(
+      "The backup opened locally. Keep the file in a safe place.",
+    );
     await expect(form).toBeHidden();
     const afterImport = await page.evaluate(() => {
       const w = window as any;
@@ -788,9 +781,7 @@ test("identity intro paragraphs and empty editor links have visible separation",
   page,
 }) => {
   await page.goto("/identity");
-  await expect(
-    page.getByRole("form", { name: "Create a key" }),
-  ).toBeVisible();
+  await expect(page.getByRole("form", { name: "Create a key" })).toBeVisible();
   const gap = await page.evaluate(() => {
     const paragraphs = [
       ...document.querySelectorAll("main > .stack > p"),
@@ -816,9 +807,7 @@ test("identity intro paragraphs and empty editor links have visible separation",
 test("same-row action buttons keep their gap at 600 px", async ({ page }) => {
   await page.setViewportSize({ width: 600, height: 844 });
   await page.goto("/identity");
-  await expect(
-    page.getByRole("form", { name: "Create a key" }),
-  ).toBeVisible();
+  await expect(page.getByRole("form", { name: "Create a key" })).toBeVisible();
   const boxes = await page.evaluate(() => {
     const form = document.querySelector('form[aria-label="Create a key"]')!;
     const buttons = [...form.querySelectorAll("button")];
@@ -869,4 +858,3 @@ test("phone Reveal passphrase aligns with the import button edge", async ({
     Math.abs(positions.revealTextLeft - positions.submitLeft),
   ).toBeLessThanOrEqual(2);
 });
-

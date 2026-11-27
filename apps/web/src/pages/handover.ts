@@ -33,7 +33,7 @@ import {
   type HandoverRecord,
   type PeerKnowledge,
 } from "../data/lifecycle.ts";
-import { savedPeer } from "../data/delivery.ts";
+import { isFinished, savedPeer } from "../data/delivery.ts";
 import type { Envelope } from "../model/types.ts";
 import type { KeyBackup, OutboxItem, SavedRecipient } from "../data/store.ts";
 import type { Peer } from "../data/api.ts";
@@ -73,9 +73,8 @@ export async function handoverState(
   const items = await app.delivery.items();
   const transfer = items.find((i) => i.id === record.transfer) ?? null;
   const accept = items.find((i) => i.id === record.accept) ?? null;
-  const done = (item: OutboxItem | null) =>
-    item !== null &&
-    Object.values(item.peers).every((peer) => peer.state === "accepted");
+  // A row without recipients is no evidence of delivery.
+  const done = (item: OutboxItem | null) => item !== null && isFinished(item);
   return {
     transfer,
     accept,
@@ -725,7 +724,11 @@ export async function handoverPage(
         await app.delivery.invalidate();
         void app.delivery
           .deliver(record.transfer, true)
-          .then(() => app.delivery.deliver(record.accept, true));
+          .catch(() => {})
+          // The acceptance gets its own turn. Group order still holds it
+          // where it depends on an unfinished transfer.
+          .then(() => app.delivery.deliver(record.accept, true))
+          .catch(() => {});
         navigate("/identity");
         app.announce(
           "One recovery acceptance is saved and uploading. The old key stays retired.",
@@ -890,7 +893,11 @@ export async function handoverPage(
         await app.delivery.invalidate();
         void app.delivery
           .deliver(record.transfer, true)
-          .then(() => app.delivery.deliver(record.accept, true));
+          .catch(() => {})
+          // The acceptance gets its own turn. Group order still holds it
+          // where it depends on an unfinished transfer.
+          .then(() => app.delivery.deliver(record.accept, true))
+          .catch(() => {});
         navigate("/identity");
         app.announce("Old key retired. The handover is saved and uploading.");
       });
@@ -938,6 +945,49 @@ export async function handoverPage(
   renderApprove();
 }
 /** The status of a stored handover, for the key page and this page. */
+/** The handover headline. It reads the same delivery summary as the record lines. */
+export function handoverStatusLine(
+  delivery: App["delivery"],
+  state: {
+    transfer: OutboxItem | null;
+    accept: OutboxItem | null;
+    transferDone: boolean;
+    acceptDone: boolean;
+  },
+): string {
+  const summary = (item: OutboxItem | null) =>
+    item ? delivery.view(item) : null;
+  const transfer = summary(state.transfer);
+  const accept = summary(state.accept);
+  const word = (item: OutboxItem | null, view: ReturnType<typeof summary>) =>
+    !item
+      ? "waiting"
+      : view?.accepted
+        ? "accepted, saving the receipt"
+        : view?.stopped
+          ? "stopped"
+          : Object.values(view?.peers ?? {}).some(
+                (peer) =>
+                  peer.status === "refused" || peer.status === "saving-refused",
+              )
+            ? "refused"
+            : view?.unconfirmed
+              ? "unconfirmed"
+              : "waiting";
+  return state.transferDone && state.acceptDone
+    ? "Handover complete. The new key is active, and the old key is retired."
+    : transfer?.accepted && accept?.accepted
+      ? "Both events were accepted. This browser still needs to save a receipt."
+      : state.transferDone
+        ? `Old key retired, acceptance ${word(state.accept, accept)}.`
+        : state.acceptDone
+          ? `Acceptance delivered, transfer ${word(state.transfer, transfer)}.`
+          : word(state.transfer, transfer) === "waiting" &&
+              word(state.accept, accept) === "waiting"
+            ? "Old key retired locally. Both events are waiting to upload."
+            : `Old key retired locally. Transfer ${word(state.transfer, transfer)}, acceptance ${word(state.accept, accept)}.`;
+}
+
 export function renderExisting(
   container: HTMLElement,
   app: App,
@@ -958,8 +1008,18 @@ export function renderExisting(
     try {
       state = await handoverState(app, record);
     } catch {
-      // A failed read keeps the last shown state. It must not cancel an
-      // older successful read that is still to be shown.
+      // A failed read keeps the last shown state with a notice. It must not
+      // cancel an older successful read that is still to be shown.
+      if (box.isConnected && mine > shownGeneration) {
+        box.querySelector("[data-handover-read-error]")?.remove();
+        box.prepend(
+          el("p", {
+            class: "small notice",
+            "data-handover-read-error": "",
+            text: "This browser could not read the handover records. The last known state stays below.",
+          }),
+        );
+      }
       return;
     }
     // Show the most recent successful result. Only a result that a newer
@@ -970,17 +1030,9 @@ export function renderExisting(
     // elsewhere during the read keeps that choice. The kind of element that
     // had focus decides which replacement gets it back.
     const active = document.activeElement;
-    const focusKind =
-      active && box.contains(active) ? active.tagName : null;
+    const focusKind = active && box.contains(active) ? active.tagName : null;
     box.replaceChildren();
-    const line =
-      state.transferDone && state.acceptDone
-        ? "Handover complete. The new key is active, and the old key is retired."
-        : state.transferDone
-          ? "Old key retired, acceptance waiting."
-          : state.acceptDone
-            ? "Acceptance delivered, transfer waiting."
-            : "Old key retired locally. Both events are waiting to upload.";
+    const line = handoverStatusLine(app.delivery, state);
     const statusLine = el("p", {
       class: "small",
       style: "font-weight:650;margin:0",
@@ -998,9 +1050,18 @@ export function renderExisting(
       if (!item) return p(`${name}: not in this browser's outbox.`, "meta");
       return p(
         `${name}: ${Object.entries(item.peers)
-          .map(
-            ([id, peer]) => `${savedPeer(item, id)?.label ?? id} ${peer.state}`,
-          )
+          .map(([id]) => {
+            const view = app.delivery.peerView(item, id);
+            return `${savedPeer(item, id)?.label ?? id} ${
+              view.status === "saving-accepted"
+                ? "accepted, receipt not saved yet"
+                : view.status.startsWith("saving")
+                  ? "result not saved yet"
+                  : view.status === "verifying" || view.status === "unconfirmed"
+                    ? "unconfirmed"
+                    : view.status
+            }`;
+          })
           .join(", ")}.`,
         "meta",
       );

@@ -49,7 +49,8 @@ test("outbox updates keep keyboard focus and the retained disclosure open", asyn
   await expect(page.locator("main h1")).toHaveText("Not delivered");
   await page.evaluate(async () => {
     const { outboxPage } = await import(String("/src/pages/outbox.ts"));
-    const { freshPeer } = await import(String("/src/data/delivery.ts"));
+    const { freshPeer, isNotDelivered, describePeer, isFinished } =
+      await import(String("/src/data/delivery.ts"));
     const main = document.querySelector("main")!;
     main.replaceChildren();
     let listener: (items: any[]) => void;
@@ -82,6 +83,26 @@ test("outbox updates keep keyboard focus and the retained disclosure open", asyn
       store: { list: async () => [] },
       announce() {},
       delivery: {
+        isNotDelivered,
+        needsReceipt: () => false,
+        hasPendingWrite: () => false,
+        // The page reads one summary. This stub builds it from saved rows.
+        view: (item: any) => ({
+          peers: Object.fromEntries(
+            Object.entries(item.peers).map(([id, peer]: [string, any]) => [
+              id,
+              { status: peer.state, text: describePeer(peer), next: null },
+            ]),
+          ),
+          stopped: item.stopped,
+          delivered: isFinished(item),
+          accepted: isFinished(item),
+          saving: false,
+          unconfirmed: false,
+          sending: false,
+          notDelivered: isNotDelivered(item),
+        }),
+        nextTryAt: () => null,
         subscribe(fn: typeof listener) {
           listener = fn;
           update();

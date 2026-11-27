@@ -93,7 +93,7 @@ test("a planned handover persists both events and the new key before upload, sur
   );
   await expect(
     page.getByRole("region", { name: "Handover status" }),
-  ).toContainText("Old key retired, acceptance waiting.");
+  ).toContainText("Old key retired, acceptance unconfirmed.");
   // Both events and the new key were saved together.
   const items = await outboxItems(page);
   const transfer = items.find((i: any) => i.label.action === "key handover");

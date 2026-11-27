@@ -1369,7 +1369,7 @@ for (const viewport of [
         .click();
       await expect(
         page.getByRole("region", { name: "Saved publication", exact: true }),
-      ).toContainText("Not delivered yet");
+      ).toContainText("Outcome unconfirmed");
       await check("publish-pending-group");
       await open(page, `/new/editor?revise=${fixture().definitions.cuktaRev}`);
       const parent = page

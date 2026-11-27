@@ -105,6 +105,8 @@ export interface PeerDelivery {
   sendAttempt?: string;
   /** When the POST of `sendAttempt` started. */
   sendStarted?: number;
+  /** The receipt named an envelope that the browser could not read yet. */
+  verifyReceipt?: true;
 }
 /** The exact draft revision that a group publishes. */
 export interface Publication {
@@ -363,8 +365,7 @@ function selectAddedInventoryIds(
 function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(request.transaction?.error ?? request.error);
+    request.onerror = () => reject(request.transaction?.error ?? request.error);
   });
 }
 interface ProjectionSnapshotMeta {
@@ -790,18 +791,28 @@ export class LocalStore {
       const outbox = tx.objectStore("outbox");
       const request = outbox.get(id);
       let result: OutboxItem | undefined;
+      let failure: unknown;
       request.onsuccess = () => {
         const current = request.result as OutboxItem | undefined;
         if (!current) return;
-        result = mutate(current);
-        // A mutation that returns the same object changes nothing, so
-        // nothing is written.
-        if (result !== current) outbox.put(result, id);
+        try {
+          result = mutate(current);
+          // The same object means that the transaction changes nothing.
+          if (result !== current) outbox.put(result, id);
+        } catch (error) {
+          failure = error;
+          try {
+            tx.abort();
+          } catch {
+            reject(error);
+          }
+        }
       };
       tx.oncomplete = () => resolve(result);
       tx.onabort = () =>
         reject(
-          tx.error ??
+          failure ??
+            tx.error ??
             new Error("Local storage did not save the delivery outcome."),
         );
       tx.onerror = () => {};
@@ -829,6 +840,7 @@ export class LocalStore {
           const item = records.find((record) => record.id === id);
           if (!item) return;
           if (
+            Object.values(item.peers).length > 0 &&
             Object.values(item.peers).every((peer) => peer.state === "accepted")
           )
             throw new Error(
@@ -2208,17 +2220,27 @@ export function describeTransport(transport: Transport): OutboxLabel {
 export function labelIndex(items: OutboxItem[]): Map<string, string> {
   const index = new Map<string, string>();
   for (const item of items)
-    if (!item.label.subject.startsWith("jve1:")) index.set(item.id, item.label.subject);
+    if (!item.label.subject.startsWith("jve1:"))
+      index.set(item.id, item.label.subject);
   return index;
 }
 /** Label with a record-ID subject replaced by the target record's word, when that record is in the same list. */
-export function resolvedLabel(item: OutboxItem, source: OutboxItem[] | Map<string, string>): OutboxLabel {
+export function resolvedLabel(
+  item: OutboxItem,
+  source: OutboxItem[] | Map<string, string>,
+): OutboxLabel {
   if (!item.label.subject.startsWith("jve1:")) return item.label;
   try {
-    const action = (JSON.parse(item.transport) as Transport).envelope.header.action as unknown as Record<string, unknown>;
+    const action = (JSON.parse(item.transport) as Transport).envelope.header
+      .action as unknown as Record<string, unknown>;
     const target = typeof action.target === "string" ? action.target : null;
     if (!target) return item.label;
-    const subject = source instanceof Map ? source.get(target) : labelIndex(source).get(target);
+    const subject =
+      source instanceof Map
+        ? source.get(target)
+        : labelIndex(source).get(target);
     return subject ? { ...item.label, subject } : item.label;
-  } catch { return item.label; }
+  } catch {
+    return item.label;
+  }
 }
