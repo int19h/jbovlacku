@@ -56,7 +56,7 @@ The first write after restart reconstructs retained envelopes from private event
 A versioned golden fixture guards extraction changes. Undecodable derived rows emit diagnostics and trigger parse-only repair.
 The SQL loader stages changed projections in bounded batches and commits them with accepted events.
 
-The [development guide](development.md#initial-lensisku-data) explains the trust assumption and the offline backfill command.
+The [trust boundaries](frontend.md#trust-boundaries) state the trust assumption. The [development guide](development.md#initial-lensisku-data) explains the offline backfill command.
 
 The evaluated checkpoint contains results and search packages. Its record inputs come from the separate compact store on restore.
 The adapter uses separate Node worker threads for completed reads and new evaluation.

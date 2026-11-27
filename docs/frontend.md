@@ -65,6 +65,73 @@ Static hosting supports reading, local signing, drafts, and deterministic word b
 Persistent shared submissions require a writable peer or file export. The app remains usable with AI and semantic search disabled.
 Long calculations use bounded jobs and explicit resource errors. Job execution never changes the signed format.
 
+### Trust boundaries
+
+A home server is a server that the client trusts for computed answers.
+The origin that supplies the client code is a home server. A server that the client is configured to read dictionary answers from is also a home server.
+Under static hosting, the client trusts the files at the origin that supplies the code.
+A configured delivery peer that is not also a home server is another peer. This holds for the receipts and own-history scans that the client reads from it.
+A client check cannot protect a reader against a malicious code origin, because that origin can supply different client code.
+The reader also trusts each server that they choose for dictionary reading. A reader who does not trust a server uses another server or runs one.
+
+The client accepts every answer that a home server computes. Examples are word and search responses, scores, publication and virtual statuses, account evidence, search packages, virtual previews, identity summaries, and receipts.
+The client does not need to recompute or cross-check these answers to check the server.
+A home-server answer can have a valid shape and still hold content that the server's own code cannot produce. A finding that needs such content is not a defect.
+The shape of an answer is its field types, its required fields, and the references between parts of that one answer.
+A reference to a part that the answer does not hold is a wrong shape. The client then rejects the answer or shows that part as unavailable.
+The client checks the shape of each answer that it processes or renders. An answer with a wrong shape must not crash the page.
+A proxy error or a version mismatch can cause such an answer. A crash on a wrong shape is a defect.
+
+Trust in a home server covers its computed answers. It does not cover the content of records that it relays.
+Other people wrote that content. The client renders and parses it as untrusted text, in the same way as provider output.
+
+When the client reads raw signed records, it verifies the event ID, the canonical JSON, the header signature, and the body hash and byte length.
+It does this for records from a home server too, because signed records move between peers.
+Within one evaluated read and its follow-up requests, such as pagination and account evidence, the client keeps one snapshot and one view.
+A page that combines separate sources labels the snapshot and view of each source and never mixes them silently.
+These rules protect against cache and request races in the client. They are not checks of the server.
+
+The client does not trust data from other peers. It accepts a signed record from another peer only after it verifies that record.
+It treats an unsigned answer from another peer as that peer's claim.
+Before the client uses a record that such an answer names, it fetches and verifies that record.
+A multi-page scan of another peer keeps the snapshot that its first page found.
+
+Local ranking for the personal view exists to keep private trust choices on the device. It is not a check of the home server.
+The optional site-view comparison, “Recompute from records,” helps a reader inspect scores. A malicious home server can defeat it.
+
+A server has no home server, and it trusts no other server's evaluated state.
+It admits records from a peer through record admission and recomputes every digest.
+An operator can trust a vector producer or a peer's embedding cache by configuration. That trust covers vector values only. The receiving server still applies the artifact checks at entry.
+
+Each program trusts the storage that it and its own tools write.
+For the browser, this storage is the storage of the app origin, such as IndexedDB and service-worker caches, in all tabs, workers, and builds.
+For the server, this storage is its data directory and its configured object store.
+The server, the offline loader, the backfill command, and the semantic indexing command write this storage under the same lock.
+Code that can change that storage can also read or replace the signing keys and the other data in it. So a check against a deliberate edit protects nothing.
+A program does not check its own storage for deliberate edits.
+It checks the version of each stored format that can change between builds.
+It checks integrity where a partial write or corruption can give a wrong result without an error.
+SQLite and IndexedDB transactions prevent partial writes. They do not detect later corruption.
+Races between tabs, workers, or concurrent requests over the same storage are ordinary defects. This rule does not cover them.
+
+If a check fails on a derived or downloaded item, the program discards that item and gets it again.
+The browser downloads the item again. The server rebuilds the item from its original records.
+If a check fails on an item that exists only in that storage, the program keeps the item and reports the failure.
+Examples of such items are keys, drafts, private trust choices, and records that wait for delivery in the browser, and original records and receipts on the server.
+Damage to the server's original records needs a restore from a trusted backup.
+
+A deliberate edit of browser storage can give wrong results only to the person who made it.
+Anything that such a browser sends to a server is untrusted input at the server API.
+Other sections require more checks of a program's own storage. Examples are the saved package checks and the semantic index checks.
+Those checks and their failure handling are allowed.
+This section takes precedence over them. A finding about a missing check of that kind is not a defect.
+
+Checks against untrusted input belong at the places where that input enters a program.
+These places are record admission, peer exchange, responses from other peers, and imports.
+They also include files, links, URL parameters, and pasted text that a user supplies, and requests to the server API.
+They also include responses to outbound requests from the server or the browser, such as AI providers and the Lensisku bridge.
+Command-line tools apply the same checks to the carrier files, directories, Git repositories, and dumps that they read.
+
 ### Service contracts
 
 | Port                  | Required behavior                                                                                |
@@ -470,7 +537,7 @@ Reading language lists show names instead of raw tags, including Lojban, Klingon
 Language tabs show counts. Each block includes a permanent revision link, reviewer disclosure, place strip, and “Revise” action.
 A proposed revision includes a notice and “Compare.” A place strip without descriptions offers “Add descriptions.”
 After the definitions, offer “Add a definition,” “Add a translation,” and related word links.
-A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs. In the site view it also contains “Check the scores locally”, whose “Recompute from records” action compares a local site-view calculation with the server scores. The personal view has no such comparison, because its scores already come from the local calculation.
+A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs. In the site view it also contains the optional “Check the scores locally”, whose “Recompute from records” action compares a local site-view calculation with the server scores. The personal view has no such comparison, because its scores already come from the local calculation.
 Personal calculation controls and score-availability warnings remain visible without opaque identifiers. Detailed identifiers remain in the disclosure.
 Source disclosures retain original text, Lensisku attribution, numeric account evidence when known, and the importer signer.
 No “official” badge appears. Organizations use ordinary identities and endorsements.
@@ -631,8 +698,8 @@ Local ordering requires the same snapshot-bound morphology evidence and `search_
 Missing evidence keeps the ordinary Definitions-first notice and never triggers a query upload.
 
 Search packages use the version 3 contract below. They retain the descriptor, exact base body hash, converted fields, and sufficient morphology evidence.
-The client recomputes a virtual from its authenticated base before treating it as verified content or signing a judgment.
-Derived package bytes remain server assertions until that recomputation. No synthetic event, body hash, or issuer stands in for a virtual.
+Before it signs a judgment on a virtual, the client computes the virtual from its authenticated base.
+A home server's package rows are trusted answers. No synthetic event, body hash, or issuer stands in for a virtual.
 Earlier prelaunch packages must be rebuilt for this feature. There is no compatibility fallback that guesses missing places.
 A missing package still permits a consented download or manual reading. It never silently uploads a local query.
 
@@ -1823,7 +1890,7 @@ A deprecated target does not make a judgment upload fail. The receipt describes 
 Dependencies can arrive later. The server revisits pending events without changing their IDs.
 
 Materialized word and search responses name their snapshot and view. Immutable-object reads carry no ranking context. Scores also name the local-overlay digest, calculation profile, work count, and exact or bounded status.
-An API score is a server assertion until a client recomputes it. The UI calls the action “Recompute from records,” not “Prove correctness.”
+An API score is the home server's calculation. The UI calls the optional comparison action “Recompute from records,” not “Prove correctness.”
 Local recomputation needs all relevant trust and lifecycle events for the chosen inventory, not just a definition and its blessings.
 The app identifies incomplete input instead of treating unrequested events as absent.
 
@@ -1865,7 +1932,7 @@ State unclaimed requires no current or historical certificate. It preserves the 
 
 The response has a 16 MiB uncompressed limit. An exceeded response or evaluation limit returns HTTP 503 with code resource_unavailable.
 It never returns a silently truncated certificate list. The client can also retrieve the underlying snapshot through ordinary inventory and event routes.
-These summaries remain server assertions until reconstructed from the signed records. They do not prove network-wide completeness.
+These summaries come from the server's own snapshot. They do not prove network-wide completeness.
 
 ### Response objects and pagination
 
@@ -2081,11 +2148,10 @@ Account_authority_applied is true if the account pass applies the enabled policy
 With a disabled policy, an attributed import still refers to the account row. Its account_authority_applied is false.
 
 For evidence, request /account-control on demand with the reference and the word response snapshot and view. Reuse the result for that exact account and pin. Concurrent readers share the request. A reader can cancel its own wait.
-If a non-null reference receives row_present false, report an inconsistent export.
-The prototype browser checks only part of the rules that an account row and its join with a status meet. Issue #188 tracks the full rule set that checkpoint restore applies.
+The browser accepts account rows and statuses from its home server. It checks only the fields that it needs to render them.
 If the snapshot expires, show that the evidence is unavailable for that request. Use the publication state alone to show a status badge.
 Read contributions from the account row whenever a reference exists. Read controller_candidates and current_observations only when account_authority_applied is true.
-Elsewhere those lists are empty. A null reference gives empty lists. A missing referenced row makes the export inconsistent.
+Elsewhere those lists are empty. A null reference gives empty lists.
 Each candidate claim links to its signed previous and carry fields through the ordinary event API.
 
 The current observation list and each certificate's observation list contain sorted, distinct event IDs. Certificates can refer to older witness policies.
@@ -2093,7 +2159,8 @@ Choose a causally maximal matching present observation for each group. If severa
 The choice of equivalent evidence never orders claims or status values.
 
 An uncertain or unavailable definition status receives no numerical Score. Its ID appears in unavailable_scores instead.
-All server-derived fields remain assertions until recomputed. An API response alone never proves account control or authorizes a signature.
+Server-derived fields are the home server's answers. They are not signed records, and another server can give different answers.
+An API response never authorizes a signature. Only the user's action does.
 Only eligible pairs receive a Score, with status active. Inactive pairs expose no numerical score and retain their historical judgments.
 
 Unknown pairs appear in unavailable_scores. A claim publisher never controls the whole pair's status alone.
@@ -2241,8 +2308,8 @@ These fields remain derived assertions. They do not change source authorship, si
 
 Rows sort by full target ID without duplicates. The package retains competing stored and virtual definitions and creates no chosen universal sense.
 Its generation pins the snapshot, selected view, conversion rule, and morphology evidence that determine eligibility and placements.
-A client can reconstruct a row from authenticated records and flag any mismatch.
-A descriptor, source hash, or computed-content mismatch rejects the row and reports incomplete coverage. It never activates a guessed virtual.
+A program that receives the package from another peer reconstructs each row from authenticated records.
+There, a descriptor, source hash, or computed-content mismatch rejects the row and reports incomplete coverage. It never activates a guessed virtual.
 An unsupported rule or missing base remains unavailable. The client never fills missing places from an earlier prelaunch package.
 
 ## 12. Admission, privacy, and rendering
@@ -2339,7 +2406,7 @@ The implementer must demonstrate these end-to-end cases before public release:
 41. Keep virtual judgments on their exact old base after a revision. Show a newer-base notice without changing the old target or copying its judgments.
 42. Deactivate and restore virtual judgments with base eligibility. Distinguish missing content, invalid conversion, source-author blocks, and unrelated reviewer influence.
 43. Share one virtual ID across converted spelling aliases. Keep ambiguous short-rafsi bases separate and use canonical converted score contexts.
-44. Authenticate version 3 virtual package rows against their exact base. Reject invented virtual bodies, mismatched descriptors, and mixed-snapshot inputs.
+44. Authenticate version 3 virtual package rows from another peer against their exact base. Reject invented virtual bodies, mismatched descriptors, and mixed-snapshot inputs.
 45. Index virtual semantic vectors from their exact converted recipe. Preserve target associations during exact-input deduplication and expose incomplete virtual coverage.
 46. Place virtual spelling matches in Lojban words, converted gloss and text matches in Definitions, and vector matches in Similar in meaning.
 47. Keep virtual identities across search groups and aliases. Bind known-word ordering to the package's view and snapshot without expanding virtual pattern candidates.

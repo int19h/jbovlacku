@@ -408,7 +408,8 @@ The command requires an existing data directory and coordinator database before 
 The command holds the same exclusive data directory lock as the server and loader.
 A repeat run skips records with the current extraction format version.
 Ordinary startup also fills missing compact rows as evaluation needs them.
-Storage damage is outside this trust model. Restore private records and original objects from a trusted backup after such damage.
+The [trust boundaries](frontend.md#trust-boundaries) cover damage to the server's derived state, including compact rows that the server rebuilds from original bytes.
+Damage to original objects or the receipt journal needs a restore from a trusted backup.
 
 The persistent checkpoint stores evaluated results separately from these private records.
 Checkpoint restoration loads record inputs from the compact store. A core or view change discards results and keeps those records.
@@ -1320,6 +1321,16 @@ After that review passes, the change gets at least one independent review before
 
 Each review must name the exact commit or complete working diff under review.
 A later substantive change requires a new review of the affected behavior.
+
+Judge findings against the [trust boundaries](frontend.md#trust-boundaries).
+A finding that needs a malicious home server is not a defect.
+A finding that needs a shape-valid home-server answer with content that its own code cannot produce is not a defect. A crash on a wrong shape is a defect.
+A finding that needs a deliberate edit of a program's own storage is not a defect.
+If a browser with edited storage can crash a server, the finding is a defect.
+If it can change what a server stores or serves for other readers, except through records that pass admission, the finding is a defect.
+A finding about input at one of the entry points that the trust boundaries list remains in scope.
+A race between tabs, workers, or concurrent requests remains in scope.
+Unsafe rendering of record content that other people wrote remains in scope, even when a home server relays it.
 
 Resolve review findings and rerun the relevant tests before handoff.
 Run thorough tests before local acceptance tests.
