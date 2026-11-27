@@ -29,8 +29,10 @@ export {
 import {
   fields,
   INVALID_PACKAGE_MESSAGE,
+  LONE_SURROGATE,
   PACKAGE_RAFSI_LIMIT,
   savedRow,
+  savedRowListCache,
 } from "./saved-package.ts";
 import {
   getManifest,
@@ -52,28 +54,40 @@ import {
 
 /**
  * Package objects are immutable snapshots. Reuse their identity index across
- * renders. A row that fails `savedRow`, or whose word the core rejects, is
- * left out of the index and counted by `invalidEntryCount`.
+ * renders in the same language. The index leaves out rows that fail `savedRow`
+ * or have a word that the core rejects. `invalidEntryCount` counts them.
  */
 export function createPackageWordIndex(identify: typeof wordId = wordId) {
   const indexes = new WeakMap<
     CachedPackage,
-    { words: Map<string, PackageEntry[]>; invalidEntries: number }
+    {
+      language: string;
+      words: Map<string, PackageEntry[]>;
+      invalidEntries: number;
+    }
   >();
-  const indexFor = (pkg: CachedPackage) => {
+  const indexFor = (pkg: CachedPackage, language: string) => {
     let index = indexes.get(pkg);
-    if (!index) {
-      index = { words: new Map(), invalidEntries: 0 };
+    if (index?.language !== language) {
+      index = { language, words: new Map(), invalidEntries: 0 };
+      if (!languageTag(language)) {
+        index.invalidEntries = 1;
+        indexes.set(pkg, index);
+        return index;
+      }
+      const checkedLists = savedRowListCache();
       for (const entry of pkg.entries) {
+        let row;
         let id;
         try {
-          id = identify(savedRow(entry, pkg.version).word);
+          row = savedRow(entry, pkg.version, language, checkedLists);
+          id = identify(row.word);
         } catch {
           index.invalidEntries++;
           continue;
         }
         const rows = index.words.get(id) ?? [];
-        rows.push(entry);
+        rows.push(row);
         index.words.set(id, rows);
       }
       indexes.set(pkg, index);
@@ -81,9 +95,15 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
     return index;
   };
   return Object.assign(
-    (pkg: CachedPackage, identity: string): readonly PackageEntry[] =>
-      indexFor(pkg).words.get(identity) ?? [],
-    { invalidEntryCount: (pkg: CachedPackage) => indexFor(pkg).invalidEntries },
+    (
+      pkg: CachedPackage,
+      language: string,
+      identity: string,
+    ): readonly PackageEntry[] => indexFor(pkg, language).words.get(identity) ?? [],
+    {
+      invalidEntryCount: (pkg: CachedPackage, language: string) =>
+        indexFor(pkg, language).invalidEntries,
+    },
   );
 }
 export const packageWordEntries = createPackageWordIndex();
@@ -172,6 +192,8 @@ export interface PackageDownloadOptions extends RequestOptions {
   packageQuota?: PackageQuota;
   /** Called after the package index and after each part that passed its checks. */
   onProgress?: (progress: PackageProgress) => void;
+  /** Inspect a checked version 2 row during download. Use it only after download succeeds. */
+  onVersion2Entry?: (entry: PackageEntryV2, id: string) => void;
 }
 const V1_FIELDS = [
   "event",
@@ -190,13 +212,10 @@ export function validateEntry(
   language: string,
   version: 1 | 2 = 1,
   packageView?: string,
-): asserts value is PackageEntry {
-  if (
-    version === 2 &&
-    value &&
-    typeof value === "object" &&
-    "search_status" in value
-  ) {
+): string {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw invalidPackage();
+  if (version === 2 && Object.hasOwn(value, "search_status")) {
     const { search_status, ...base } = value as Record<string, any>;
     if (
       packageView !== undefined
@@ -207,8 +226,7 @@ export function validateEntry(
           !["active", "retired", "ineligible"].includes(search_status.status)
     )
       throw invalidPackage();
-    validateEntry(base, language, version);
-    return;
+    return validateEntry(base, language, version);
   }
   if (version === 2) {
     if (
@@ -217,7 +235,9 @@ export function validateEntry(
       typeof value.notes !== "boolean" ||
       !Array.isArray(value.rafsi) ||
       value.rafsi.length > PACKAGE_RAFSI_LIMIT ||
-      value.rafsi.some((r: unknown) => typeof r !== "string") ||
+      value.rafsi.some(
+        (r: unknown) => typeof r !== "string" || LONE_SURROGATE.test(r),
+      ) ||
       !(
         value.rafsi_complete === undefined ||
         typeof value.rafsi_complete === "boolean"
@@ -247,8 +267,7 @@ export function validateEntry(
     void rafsi;
     void rafsi_complete;
     void attribution;
-    validateEntry(base, language, 1);
-    return;
+    return validateEntry(base, language, 1);
   }
   if (
     !fields(value, V1_FIELDS) ||
@@ -278,7 +297,7 @@ export function validateEntry(
   )
     throw invalidPackage();
   try {
-    wordId({ language: "jbo", spelling: value.word.spelling });
+    return wordId({ language: "jbo", spelling: value.word.spelling });
   } catch {
     throw invalidPackage();
   }
@@ -289,6 +308,7 @@ export function validateCachedPackage(
   budget?: SearchRequestBudget,
 ): asserts value is CachedPackage {
   if (
+    !languageTag(language) ||
     !(
       fields(value, ["snapshot", "entries"]) ||
       fields(value, ["snapshot", "version", "entries"]) ||
@@ -533,11 +553,12 @@ async function downloadEntries(
       if (!Array.isArray(data) || data.length !== part.count)
         throw invalidPackage();
       for (const entry of data) {
-        validateEntry(entry, language, version, pkg.search_view);
+        const id = validateEntry(entry, language, version, pkg.search_view);
         if (pkg.search_view && typeof entry.search_status !== "string")
           throw invalidPackage();
         if (entry.event <= previous) throw invalidPackage();
         previous = entry.event;
+        if (version === 2) options.onVersion2Entry?.(entry, id);
         entries.push(entry);
       }
       progress.parts++;

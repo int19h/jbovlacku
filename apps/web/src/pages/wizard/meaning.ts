@@ -1,4 +1,9 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
+import {
+  SEARCH_QUERY_LENGTH_LIMIT,
+  SearchBudgetError,
+  SearchQueryTooLongError,
+} from "../../../../../packages/search/src/index.ts";
 import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
@@ -337,15 +342,12 @@ export async function meaningPage(
   left.append(typedStatus);
   let typedConsent: string | null = null;
   let typedRequest = 0;
-  const typedPackages = new Map<
-    string,
-    Promise<CachedPackage | null | "invalid">
-  >();
   const typedKey = () =>
     JSON.stringify([typedWord(draft.spelling), draft.language]);
   const checkTypedWord = async () => {
     const request = ++typedRequest;
     const key = typedKey();
+    const language = draft.language;
     if (typedConsent !== key) typedConsent = null;
     typedStatus.replaceChildren();
     const spelling = typedWord(draft.spelling);
@@ -358,19 +360,16 @@ export async function meaningPage(
       typedStatus.append(p(diagnostic, "meta"));
     const valid = () =>
       context.live() && request === typedRequest && key === typedKey();
-    if (!typedPackages.has(draft.language))
-      typedPackages.set(
-        draft.language,
-        app.store
-          .get("packages", draft.language)
-          .catch(() => undefined)
-          .then(savedPackage)
-          .catch((error: unknown) => {
-            if (!(error instanceof PackageValidationError)) throw error;
-            return "invalid" as const;
-          }),
-      );
-    const typedPackage = await typedPackages.get(draft.language);
+    let typedPackage: CachedPackage | null | "invalid" = null;
+    try {
+      const stored = await app.store
+        .get("packages", language)
+        .catch(() => undefined);
+      typedPackage = savedPackage(stored, language);
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      typedPackage = "invalid";
+    }
     if (!valid()) return;
     // An unusable package shows the message and counts as no package, so
     // the server check below stays available.
@@ -446,9 +445,7 @@ export async function meaningPage(
       // every batch would pay a paint and layout pass per 50 rows, which
       // turns a hundred-thousand-row render quadratic.
       async function renderRest() {
-        const holder = definitionsList.querySelector(
-          ":scope > li:last-child",
-        );
+        const holder = definitionsList.querySelector(":scope > li:last-child");
         let opened = false;
         let sinceYield = 0;
         let lastFirst: HTMLElement | undefined;
@@ -501,12 +498,18 @@ export async function meaningPage(
     // The word index reads every row through the shared row check and the
     // core. A row that fails either makes the package unusable, as on the
     // other pages.
-    const entries = packageData ? packageWordEntries(packageData, id) : [];
-    if (packageData && packageWordEntries.invalidEntryCount(packageData) > 0) {
+    const entries = packageData
+      ? packageWordEntries(packageData, draft.language, id)
+      : [];
+    if (
+      packageData &&
+      packageWordEntries.invalidEntryCount(packageData, draft.language) > 0
+    ) {
       packageInvalid = true;
       packageData = null;
     }
-    if (packageInvalid) typedStatus.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
+    if (packageInvalid)
+      typedStatus.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
     if (packageData) {
       if (entries.length)
         showExisting(
@@ -523,7 +526,7 @@ export async function meaningPage(
     } else if (!packageInvalid)
       typedStatus.append(
         p(
-          "The word could not be checked. No local package is downloaded for this language.",
+          "The word could not be checked. No usable local package is available for this language.",
           "small",
         ),
       );
@@ -645,43 +648,71 @@ export async function meaningPage(
   const list = el("ol", { class: "similar" });
   const note = el("p", { class: "meta" });
   right.append(list, note);
-  let cached: CachedPackage | null = null;
+  let nearbySource:
+    | "pending"
+    | "local"
+    | "missing"
+    | "invalid"
+    | "unavailable" = "pending";
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
+  let serverSearching = false;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery().split(" ")[0];
+  const nearbyTooLong = (
+    terms = nearbyTerms(meaning.input.value),
+    query = remoteQuery(),
+  ) =>
+    terms.some((term) => term.length > SEARCH_QUERY_LENGTH_LIMIT) ||
+    query.length > SEARCH_QUERY_LENGTH_LIMIT;
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   const renderMode = () => {
     modeLabel.replaceChildren();
-    if (cached) modeLabel.append(text("by words, from the downloaded package"));
+    if (nearbySource === "local")
+      modeLabel.append(text("by words, from the downloaded package"));
     else {
-      modeLabel.append(text("no local package · "));
-      modeLabel.append(
-        button(
-          remoteConsent === consentKey()
-            ? "searching this server"
-            : "search this server",
-          async () => {
-            if (remoteConsent !== consentKey()) {
-              const query = remoteQuery();
-              if (!query) return;
-              if (
-                !confirm(
-                  `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
-                )
-              )
-                return;
-              remoteConsent = consentKey();
-              renderMode();
-              await nearby();
-            }
-          },
-          {
-            class: "btn btn-quiet",
-            style: "padding:0 6px;font-size:13px",
-          },
-        ),
-      );
+      const label =
+        nearbySource === "invalid"
+          ? "saved package is invalid"
+          : nearbySource === "missing"
+            ? "no local package"
+            : nearbySource === "unavailable"
+              ? "local package unavailable"
+              : "by words";
+      if (nearbyTooLong()) {
+        modeLabel.append(text(label));
+      } else {
+        modeLabel.append(text(label + " · "));
+        if (serverSearching) modeLabel.append(text("searching this server"));
+        else if (remoteConsent === consentKey())
+          modeLabel.append(text("server search allowed"));
+        else
+          modeLabel.append(
+            button(
+              "allow server search",
+              async () => {
+                if (remoteConsent !== consentKey()) {
+                  const query = remoteQuery();
+                  if (!query || nearbyTooLong()) return;
+                  if (
+                    !confirm(
+                      `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
+                    )
+                  )
+                    return;
+                  remoteConsent = consentKey();
+                  renderMode();
+                  clearTimeout(timer);
+                  await nearby();
+                }
+              },
+              {
+                class: "btn btn-quiet",
+                style: "padding:0 6px;font-size:13px",
+              },
+            ),
+          );
+      }
     }
     if (assistanceVisibility(app, context).enabled)
       modeLabel.append(
@@ -703,6 +734,10 @@ export async function meaningPage(
   const scheduleNearby = () => {
     nearbyRequest++;
     if (remoteConsent !== consentKey()) remoteConsent = null;
+    nearbySource = "pending";
+    serverSearching = false;
+    list.replaceChildren();
+    note.textContent = "";
     renderMode();
     clearTimeout(timer);
     timer = setTimeout(() => void nearby(), 400);
@@ -711,7 +746,9 @@ export async function meaningPage(
     list.replaceChildren();
     if (!hits.length) {
       note.textContent = meaning.input.value.trim()
-        ? "No close definitions found. A new word is fine."
+        ? source === "local"
+          ? "No close definitions found in the local package. A new word is fine."
+          : `No close definitions found on ${location.host}. A new word is fine.`
         : "";
       return;
     }
@@ -781,35 +818,36 @@ export async function meaningPage(
       request === nearbyRequest &&
       value === meaning.input.value &&
       language === draft.language;
-    // An unusable package, by this page's read or by the worker's verdict,
-    // is announced once per page and then treated as no local package, so
-    // the consent and server branch below still runs.
-    const unusable = (error: unknown) => {
-      if (!(error instanceof PackageValidationError)) throw error;
-      if (current() && !invalidAnnounced) {
+    const localFailure = (error: unknown) => {
+      const invalid = error instanceof PackageValidationError;
+      if (invalid && !invalidAnnounced) {
         invalidAnnounced = true;
         app.announce(error.message);
       }
-      return null;
+      nearbySource = invalid ? "invalid" : "unavailable";
     };
     try {
-      let pkg: CachedPackage | null;
+      let pkg: CachedPackage | null = null;
+      let read = true;
       try {
-        pkg = savedPackage(await app.store.get("packages", language));
+        const stored = await app.store.get("packages", language).catch(() => {
+          read = false;
+          return undefined;
+        });
+        if (!current()) return;
+        pkg = savedPackage(stored, language);
+        nearbySource = pkg ? "pending" : read ? "missing" : "unavailable";
       } catch (error) {
-        pkg = unusable(error);
+        localFailure(error);
       }
-      if (!current()) return;
-      cached = pkg;
+      // With no query, defer the verdict for a saved package.
       renderMode();
       if (!terms.length) {
-        renderHits([], "local");
+        list.replaceChildren();
+        note.textContent = "";
         return;
       }
       if (pkg) {
-        // Rank all query lists in the worker before selecting six nearby rows.
-        // Each word goes in its typed spelling, so the local length limit
-        // reads what the reader typed; the worker lowercases it afterwards.
         try {
           const found = await searchPackage(pkg, language, terms, {
             patterns: false,
@@ -817,28 +855,55 @@ export async function meaningPage(
             limit: 6,
             signal: context.signal,
           });
-          if (current()) renderHits(found.hits[0], "local");
+          if (current()) {
+            nearbySource = "local";
+            renderMode();
+            renderHits(found.hits[0], "local");
+          }
           return;
         } catch (error) {
-          // An obsolete request changes nothing: it returns before it
-          // touches the page's state.
           if (!current()) return;
-          cached = unusable(error);
-          renderMode();
+          if (error instanceof PackageValidationError) {
+            localFailure(error);
+            renderMode();
+          } else if (
+            error instanceof SearchQueryTooLongError ||
+            (error instanceof SearchBudgetError && error.phase === "search")
+          ) {
+            nearbySource = "local";
+            renderMode();
+            throw error;
+          } else if (remoteConsent !== consentKey()) {
+            // Keep non-validation local failures local until explicit consent.
+            throw error;
+          }
         }
       }
-      renderHits([], "local");
+      const query = remoteQuery();
+      if (nearbyTooLong(terms, query)) {
+        renderMode();
+        throw new SearchQueryTooLongError();
+      }
       if (remoteConsent !== consentKey()) {
         note.textContent =
           "Download a search package in Settings for local nearby search, or allow a search on this server.";
         return;
       }
-      const result = await remoteDraftSearch(remoteQuery(), language, 10, {
+      note.textContent = "";
+      const pending = remoteDraftSearch(query, language, 10, {
         signal: context.signal,
       });
+      serverSearching = true;
+      renderMode();
+      const result = await pending;
       if (current()) renderHits(result.hits, "remote");
     } catch (error) {
       if (current()) note.textContent = describe(error);
+    } finally {
+      if (current() && serverSearching) {
+        serverSearching = false;
+        renderMode();
+      }
     }
   };
   void nearby();

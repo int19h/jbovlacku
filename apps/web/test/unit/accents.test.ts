@@ -284,15 +284,15 @@ test("package identity work runs once per package object", async () => {
     ),
   };
   const id = wordId({ language: "jbo", spelling: "dján" });
-  assert.equal(lookup(cached, id).length, 30_000);
+  assert.equal(lookup(cached, "en", id).length, 30_000);
   assert.equal(calls, 30_000);
-  assert.equal(lookup(cached, id).length, 30_000);
+  assert.equal(lookup(cached, "en", id).length, 30_000);
   assert.equal(
-    lookup(cached, wordId({ language: "jbo", spelling: "blanu" })).length,
+    lookup(cached, "en", wordId({ language: "jbo", spelling: "blanu" })).length,
     0,
   );
   assert.equal(calls, 30_000);
-  assert.equal(lookup({ ...cached }, id).length, 30_000);
+  assert.equal(lookup({ ...cached }, "en", id).length, 30_000);
   assert.equal(calls, 60_000);
 });
 
@@ -390,23 +390,26 @@ test("the word index skips and counts invalid cached entries once", async () => 
     ],
   };
   const id = wordId({ language: "jbo", spelling: "djan" });
-  assert.deepEqual(lookup(cached, id), [cached.entries[0], cached.entries[2]]);
-  assert.equal(lookup.invalidEntryCount(cached), 2);
+  assert.deepEqual(lookup(cached, "en", id), [
+    cached.entries[0],
+    cached.entries[2],
+  ]);
+  assert.equal(lookup.invalidEntryCount(cached, "en"), 2);
   assert.deepEqual(
-    lookup(cached, wordId({ language: "jbo", spelling: "blanu" })),
+    lookup(cached, "en", wordId({ language: "jbo", spelling: "blanu" })),
     [cached.entries[4]],
   );
   assert.deepEqual(
-    lookup(cached, wordId({ language: "jbo", spelling: "klama" })),
+    lookup(cached, "en", wordId({ language: "jbo", spelling: "klama" })),
     [],
   );
-  assert.equal(lookup.invalidEntryCount(cached), 2);
+  assert.equal(lookup.invalidEntryCount(cached, "en"), 2);
   assert.equal(calls, 5);
   const replacement = cache();
-  assert.equal(lookup.invalidEntryCount(replacement), 0);
-  assert.equal(lookup(replacement, id).length, 2);
+  assert.equal(lookup.invalidEntryCount(replacement, "en"), 0);
+  assert.equal(lookup(replacement, "en", id).length, 2);
   assert.equal(calls, 7);
-  assert.equal(lookup.invalidEntryCount(cached), 2);
+  assert.equal(lookup.invalidEntryCount(cached, "en"), 2);
   assert.equal(calls, 7);
 });
 

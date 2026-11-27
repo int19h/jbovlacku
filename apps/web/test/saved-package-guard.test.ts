@@ -302,7 +302,7 @@ for (const [label, saved] of savedPackages) {
     await seed(page, saved, { meaning: "book", step: 1 });
     page.on("dialog", (dialog) => void dialog.accept());
     await page.goto("/new/meaning");
-    await page.getByRole("button", { name: "search this server" }).click();
+    await page.getByRole("button", { name: "allow server search" }).click();
     await expect(page.locator("ol.similar")).toContainText("cukta");
     const body = await page.locator("body").innerText();
     expect(body).not.toMatch(RAW_ERROR);
@@ -936,30 +936,12 @@ test("an obsolete nearby lookup does not clear the current language's package", 
   await page.waitForFunction(
     () => (window as unknown as { frenchRead?: boolean }).frenchRead === true,
   );
-  const mode = () =>
-    page.evaluate(
-      () =>
-        document
-          .querySelector("#similar-h")
-          ?.parentElement?.querySelector("span.meta")?.textContent ?? "",
-    );
-  expect(await mode()).toContain("from the downloaded package");
+  const panel = page.getByRole("region", { name: "Close in meaning" });
+  await expect(panel).not.toContainText("from the downloaded package");
   await page.evaluate(() => (window as unknown as { held: () => void }).held());
-  // Let the released reply settle, then type: the input handler shows the
-  // source from the page's state at once, before the next lookup runs.
-  await page.waitForTimeout(100);
-  const afterInput = await page.evaluate(() => {
-    const input = document.querySelector("textarea")!;
-    input.value = "livre";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    return (
-      document
-        .querySelector("#similar-h")
-        ?.parentElement?.querySelector("span.meta")?.textContent ?? ""
-    );
-  });
-  expect(afterInput).toContain("from the downloaded package");
-  expect(afterInput).not.toContain("no local package");
+  await page.getByRole("textbox", { name: "Meaning", exact: true }).fill("livre");
+  await expect(panel).toContainText("from the downloaded package");
+  await expect(panel).not.toContainText("saved package is invalid");
 });
 
 /**
@@ -1102,4 +1084,128 @@ test("an empty rafsi slot is no rafsi on the rafsi pair page", async ({
     page.getByRole("heading", { name: "Rafsi pair unavailable" }),
   ).toBeVisible();
   expect(await page.locator("main").innerText()).not.toContain("undefined");
+});
+
+test("a valid first English pair with an invalid last row selects valid French or reports invalid across pair, Settings, and lujvo draft", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const pair = await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    return core.rafsiPairId(
+      core.wordId({ language: "jbo", spelling: "cukta" }),
+      "cuk",
+    );
+  }, corePath);
+  const frenchRow = {
+    ...validRow,
+    language: "fr",
+    glosses: [{ language: "fr", text: "livre", sense: null }],
+    plain_text: "Un livre ② {place 3}.",
+  };
+  const frenchZbasu = {
+    ...zbasuRow,
+    language: "fr",
+    glosses: [{ language: "fr", text: "construire", sense: null }],
+    plain_text: "Construire.",
+  };
+  const fallbackFiller = Array.from({ length: 130 }, (_, i) => ({
+    ...validRow,
+    event: "jve1:" + (i + 2).toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling: `𠮷${i}` },
+    rafsi: [],
+  }));
+  const badVariants: [string, unknown[]][] = [
+    [
+      "wrong-language last row",
+      [
+        validRow,
+        zbasuRow,
+        {
+          ...frenchRow,
+          event: "jve1:" + "f".repeat(64),
+          rafsi: [],
+        },
+      ],
+    ],
+    [
+      "invalid spelling in final partial fallback batch",
+      [
+        validRow,
+        ...fallbackFiller,
+        {
+          ...validRow,
+          event: "jve1:" + "f".repeat(64),
+          word: { language: "jbo", spelling: "q\u0301" },
+          rafsi: [],
+        },
+      ],
+    ],
+  ];
+  for (const [, badEntries] of badVariants) {
+    // With valid French fallback: pair selects French, Settings withholds
+    // English count, and lujvo builder saves French evidence instead of English.
+    await seed(
+      page,
+      { version: 2, snapshot: "sha256:" + "a".repeat(64), entries: badEntries },
+      { ...lujvoDraft, spelling: "ckuzba" },
+      {
+        fr: {
+          version: 2,
+          snapshot: "sha256:" + "b".repeat(64),
+          entries: [frenchRow, frenchZbasu],
+        },
+      },
+    );
+    await blockDownloads(page);
+    await page.goto(`/rafsi-pair/${pair}`);
+    await expect(
+      page.locator('main a[href^="/word/cukta?"]').first(),
+    ).toHaveAttribute("href", "/word/cukta?lang=fr");
+
+    await page.goto("/preferences");
+    const enRow = page
+      .locator('[data-package-control="remove"][data-package-language="en"]')
+      .locator("..");
+    await expect(enRow).toContainText(INVALID);
+    await expect(enRow).not.toContainText("definition");
+    const frRow = page
+      .locator('[data-package-control="remove"][data-package-language="fr"]')
+      .locator("..");
+    await expect(frRow).toContainText("2 definitions");
+
+    await page.goto("/new/lujvo");
+    await expect(page.locator("main")).toContainText(INVALID);
+    await expect(page.getByRole("region", { name: "Result" })).toContainText(
+      "bbbbbbbbbbbb",
+    );
+    await expectSavedBuilderDraft(page);
+    const savedDraft = await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().get("drafts", "current")) as {
+        lujvo?: { components: { gloss: string }[] };
+      };
+    });
+    expect(
+      savedDraft.lujvo?.components.every((c) => c.gloss !== "book"),
+    ).toBe(true);
+
+    // Without any usable alternative: pair reports invalid package and shows no English link.
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().delete("packages", "fr");
+    });
+    await seed(page, {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: badEntries,
+    });
+    await blockDownloads(page);
+    await page.goto(`/rafsi-pair/${pair}`);
+    await expectInvalidOnly(page);
+    await expect(
+      page.locator('main a[href="/word/cukta?lang=en"]'),
+    ).toHaveCount(0);
+  }
 });

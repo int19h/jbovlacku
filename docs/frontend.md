@@ -374,8 +374,19 @@ Inline or historical reads that must construct a package still include that work
 The server's existing package and evaluation lifetimes bound those prepared indexes.
 
 Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.
-Every package read checks that marker, including reads from another connection or tab.
-Each connection retains at most two package objects. A changed revision invalidates that connection's retained data, even when the snapshot ID stays equal.
+`LocalStore.get` checks the revision marker and, when needed, reads the stored package in one readonly transaction.
+Each `LocalStore` instance retains at most two language snapshots that have a string revision, evicting the least recently used entry when a third language is cached.
+While a language stays in that two-language cache and its stored revision is unchanged, repeat `LocalStore.get` calls can reuse the retained snapshot without reading the package again.
+This tab's writes and deletions, a new revision written by another tab, and eviction by a third language all drop cached data so the next read reads fresh from storage.
+A database version change clears the cache and closes the connection.
+Later reads in that page fail until the page reloads.
+`LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
+A missing legacy revision supplies no reuse evidence.
+A page uses a freshly read package only after the package header, storage-key language tag, and every row pass validation for that language. No whole-package verdict is persisted in storage.
+Settings, the rafsi pair route, the saved version 1 check in rafsi package loading, the Meaning typed-word check, and the wizard conflict inventory scan every row on the main thread against the shared package, storage-key, row, lone-surrogate rafsi, and word-spelling rules before using the package.
+The `/rafsi` and `/claim` lookups scan version 2 rows on the main thread against the shared row rules (including lone-surrogate rafsi rejection) without checking word spellings, and then wait for the search worker.
+Search and Meaning nearby check only the package header and storage-key language tag on the main thread and wait for the search worker (lujvo part lookup searches the package selected by the wizard inventory in the worker).
+The search worker enforces all of the shared package, storage-key, row, lone-surrogate rafsi, and word-spelling rules plus exact package and row field sets, strictly ascending event order, version 2 attribution shapes, `search_status` and `search_view` pairing, and rejection of non-function own `some` properties on row arrays.
 A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
@@ -384,8 +395,8 @@ A rafsi lookup downloads the current package for each of its languages. When bro
 
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
-It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.
-Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
+It retains two prepared packages by distinct in-memory identity. Within one page session, repeated queries on a retained snapshot reuse its prepared index directly with no new full IndexedDB read and no structural comparison while that snapshot remains in the two-entry caches. A distinct fresh clone with the same durable revision shares that preparation only after content equality against the trusted snapshot succeeds within the request budget, checking row order, exact container prototypes, own array keys, holes, and worker fields. Comparison walks both copies per reference with no pair memo, charges only the cold path's per-row units (zero units for an empty package), and caps each row's walk at the cold path's per-row bound, so comparison and fallback stay within twice the cold path's work for the same input, including zero rows. Equal content with a different internal sharing pattern still counts as equal within that cap, and a hand-edited package with shared parts costs the same per-reference work as the cold path, so a small configured work limit can refuse it. An unequal copy, or a comparison that exceeds the per-row cap, declines reuse and takes the cold path to validate and prepare the package under a new in-memory identity. Only an exhausted request budget ends the request with a preparation-limit error.
+Page reload closes that worker and clears the session package cache. The first search after reload reads, transfers, validates, and prepares the saved package again, catching out-of-band storage edits made while an earlier page stayed open that fail validation.
 
 Nearby lookup in the meaning step and part lookup in the lujvo builder use the same worker and prepared index.
 Each nearby call reads the package for its current language, including an empty meaning. A missing package never disables later local lookups.

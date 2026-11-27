@@ -115,10 +115,11 @@ export async function lujvoPage(
   // The inventory walks every row of the chosen package through the core,
   // so the source lookups below read only words that the core accepts.
   const {
-    pkg: cached,
+    selected,
     inventory,
     invalid: packageInvalid,
   } = savedInventory(saved);
+  const cached = selected?.pkg ?? null;
   let state;
   try {
     state = prepareLujvoBuilder(draft, cached);
@@ -353,19 +354,18 @@ export async function lujvoPage(
       request === partSearch &&
       addField.input.value.trim() === query;
     let hits: LocalHit[] = [];
-    let lookupUnavailable = false;
+    let answered = false;
     try {
-      if (cached)
+      if (selected) {
         hits = (
-          await searchPackage(
-            cached,
-            cached.entries[0]?.language ?? draft.language,
-            [query],
-            { limit: 6, signal: context.signal },
-          )
+          await searchPackage(selected.pkg, selected.language, [query], {
+            limit: 6,
+            signal: context.signal,
+          })
         ).hits[0];
+        answered = true;
+      }
     } catch (error) {
-      lookupUnavailable = true;
       if (current())
         addResults.append(el("li", { class: "notice", text: describe(error) }));
     }
@@ -426,7 +426,12 @@ export async function lujvoPage(
           ? text(` · rafsi ${displayRafsi.join(", ")}`, "meta")
           : text(" · no listed rafsi", "meta"),
         ...(hidden > 0
-          ? [text(` · also: ${plural(hidden, "other matching definition")}`, "meta")]
+          ? [
+              text(
+                ` · also: ${plural(hidden, "other matching definition")}`,
+                "meta",
+              ),
+            ]
           : []),
         button(
           "Add",
@@ -475,12 +480,16 @@ export async function lujvoPage(
                 : analysis.kind === "cmevla"
                   ? "cmevla"
                   : "other";
+      const lookup =
+        !answered || !selected
+          ? "local dictionary lookup is unavailable"
+          : packageWordEntries(selected.pkg, selected.language, queryIdentity)
+                .length
+            ? "no exact match in these results"
+            : "not in the local package";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
-        text(
-          ` ${kindLabel(kind)}, ${lookupUnavailable ? "local dictionary lookup is unavailable" : "not in the local package"}`,
-          "meta",
-        ),
+        text(` ${kindLabel(kind)}, ${lookup}`, "meta"),
         analysis.diagnostics.length
           ? text(` · ${analysis.diagnostics[0]}`, "meta")
           : text(""),
@@ -518,7 +527,7 @@ export async function lujvoPage(
           class: "meta",
           text: packageInvalid
             ? "The saved search package is invalid, so word search is unavailable here. Download another package on the Settings page, or add a form as entered."
-            : "No local package is downloaded, so word search is unavailable here. Download one on the Settings page, or add a form as entered.",
+            : "No usable local package is available for word search here. Download one on the Settings page, or add a form as entered.",
         }),
       );
   };
@@ -1004,14 +1013,15 @@ export async function lujvoPage(
       language: "jbo",
       spelling: candidate.spelling.normalize("NFC"),
     });
-    const taken = cached
-      ? packageWordEntries(cached, candidateId).length > 0
+    const taken = selected
+      ? packageWordEntries(selected.pkg, selected.language, candidateId)
+          .length > 0
       : false;
     availability.textContent = cached
       ? taken
         ? `Taken: ${candidate.spelling} is defined in the local package of snapshot ${cached.snapshot.slice(7, 19)}….`
         : `Not in the local package of snapshot ${cached.snapshot.slice(7, 19)}…. The package covers retained definitions in its language only.`
-      : "Availability in the local package is unknown: no package is downloaded.";
+      : "Availability is unknown because there is no usable local package.";
     resultCard.append(availability);
     const checked = candidate.spelling;
     if (!state.typed)
@@ -1032,12 +1042,14 @@ export async function lujvoPage(
           availability.textContent +=
             error instanceof RequestError && error.status === 404
               ? ` The server has no definition of ${checked} now.`
-              : ` The server could not be asked: ${describe(error)}.`;
+              : ` Server availability is unknown: ${describe(error)}.`;
         });
     if (candidate.unlisted.length)
       resultCard.append(
         p(
-          `Rafsi ${candidate.unlisted.join(", ")} are not listed in the local package${inventory.snapshot ? ` of snapshot ${inventory.snapshot.slice(7, 19)}…` : ""}. They are claims you entered or claims the package does not carry.`,
+          inventory.snapshot && inventory.hasClaims
+            ? `Rafsi ${candidate.unlisted.join(", ")} are not listed in the local package of snapshot ${inventory.snapshot.slice(7, 19)}….`
+            : `Local claim coverage is unknown for rafsi ${candidate.unlisted.join(", ")}.`,
           "small",
         ),
       );

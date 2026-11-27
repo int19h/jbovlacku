@@ -470,7 +470,9 @@ export type JudgmentValue = "bless" | "curse" | "clear";
 export type TrustValue = "heed" | "shun" | "clear";
 export const allScope: TrustScope = { kind: "*", word: "*", language: "*" };
 export const eventId = (value: unknown): value is string =>
-  typeof value === "string" && /^jve1:[0-9a-f]{64}$/.test(value);
+  typeof value === "string" &&
+  value.length === "jve1:".length + 64 &&
+  /^jve1:[0-9a-f]+$/.test(value);
 export const wordIdValid = (value: unknown): value is string =>
   typeof value === "string" && /^jvw1:[0-9a-f]{64}$/.test(value);
 export const pairIdValid = (value: unknown): value is string =>
@@ -478,7 +480,9 @@ export const pairIdValid = (value: unknown): value is string =>
 export const hashId = (value: unknown): value is string =>
   typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 export const identityId = (value: unknown): value is string =>
-  typeof value === "string" && /^ed25519:[0-9a-f]{64}$/.test(value);
+  typeof value === "string" &&
+  value.length === "ed25519:".length + 64 &&
+  /^ed25519:[0-9a-f]+$/.test(value);
 export const languageTag = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length <= 63 &&

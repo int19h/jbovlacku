@@ -193,15 +193,31 @@ export function workerErrorMessage(event: unknown): string | undefined {
 interface Client {
   worker: Worker;
   canceledPatterns: Set<number>;
-  retained: Set<string | number>;
+  retained: Set<number>;
   cacheRevision: number;
-  preparing: Map<number, string | number>;
+  preparing: Map<number, number>;
   /**
    * In-flight transfer counts by package key. A key with no count has no
    * pending transfer, so reuse is decided by lookup instead of copying
    * every pending key.
    */
-  preparingKeys: Map<string | number, number>;
+  preparingKeys: Map<number, number>;
+  /**
+   * Validated or preparing package snapshots paired with their worker key.
+   * Pruned to keys that the worker still retains or is preparing.
+   */
+  snapshots: Map<
+    number,
+    {
+      pkg: CachedPackage;
+      language: string;
+      storageHint?: string;
+    }
+  >;
+  /** Direct lookup from a retained or preparing package object and language to its key. */
+  byPackage: WeakMap<CachedPackage, Map<string, number>>;
+  /** Fresh clones already verified equal to a retained snapshot. */
+  aliases: WeakMap<CachedPackage, { key: number; language: string }>;
   pending: Map<
     number,
     {
@@ -221,12 +237,313 @@ export const packageSearchStats = () =>
 let client: Client | undefined;
 let requestId = 0,
   packageId = 0;
-const packageIds = new WeakMap<CachedPackage, number>();
+
+const MAX_STRUCTURE_DEPTH = 32;
+
+interface StructureState {
+  budget: SearchRequestBudget;
+  stepCap: number;
+  chargeSteps: boolean;
+  steps: number;
+  leftStack: object[];
+  rightStack: object[];
+}
+
+function sameStructuredValue(
+  incoming: unknown,
+  trusted: unknown,
+  state: StructureState,
+  depth: number,
+): boolean {
+  if (typeof incoming === "string" && typeof trusted === "string") {
+    if (incoming.length !== trusted.length) return false;
+    if (incoming.length > 64) {
+      const units = Math.ceil(incoming.length / 64);
+      if (state.steps + units > state.stepCap) return false;
+      if (state.chargeSteps) state.budget.reserve(units, "prepare");
+      state.steps += units;
+    }
+    return incoming === trusted;
+  }
+  if (
+    !incoming ||
+    !trusted ||
+    typeof incoming !== "object" ||
+    typeof trusted !== "object"
+  )
+    return Object.is(incoming, trusted);
+  const isArray = Array.isArray(trusted);
+  if (Array.isArray(incoming) !== isArray) return false;
+  if (isArray) {
+    if (
+      Object.getPrototypeOf(incoming) !== Array.prototype ||
+      Object.getPrototypeOf(trusted) !== Array.prototype
+    )
+      return false;
+  } else {
+    const protoA = Object.getPrototypeOf(incoming);
+    const protoB = Object.getPrototypeOf(trusted);
+    if (
+      protoA !== protoB ||
+      (protoA !== Object.prototype && protoA !== null)
+    )
+      return false;
+  }
+  if (depth >= MAX_STRUCTURE_DEPTH) return false;
+  const { leftStack, rightStack } = state;
+  for (let i = 0; i < leftStack.length; i++) {
+    if (leftStack[i] === incoming || rightStack[i] === trusted) return false;
+  }
+  leftStack.push(incoming);
+  rightStack.push(trusted);
+  let matched = false;
+  if (isArray) {
+    const left = incoming as unknown[];
+    const right = trusted as unknown[];
+    if (left.length === right.length) {
+      const keysA = Reflect.ownKeys(left);
+      const keysB = Reflect.ownKeys(right);
+      if (keysA.length === keysB.length) {
+        const ownKeyCount = keysB.length;
+        if (ownKeyCount > 0) {
+          if (state.steps + ownKeyCount > state.stepCap) {
+            leftStack.pop();
+            rightStack.pop();
+            return false;
+          }
+          if (state.chargeSteps) state.budget.reserve(ownKeyCount, "prepare");
+          state.steps += ownKeyCount;
+        }
+        const leftRecord = left as unknown as Record<PropertyKey, unknown>;
+        const rightRecord = right as unknown as Record<PropertyKey, unknown>;
+        matched = true;
+        for (let i = 0; i < ownKeyCount; i++) {
+          const key = keysB[i];
+          if (key === "length") continue;
+          if (keysA[i] !== key && !Object.hasOwn(left, key)) {
+            matched = false;
+            break;
+          }
+          if (
+            !sameStructuredValue(
+              leftRecord[key],
+              rightRecord[key],
+              state,
+              depth + 1,
+            )
+          ) {
+            matched = false;
+            break;
+          }
+        }
+      }
+    }
+  } else {
+    const keysA = Reflect.ownKeys(incoming);
+    const keysB = Reflect.ownKeys(trusted);
+    if (keysA.length === keysB.length) {
+      const ownKeyCount = keysB.length;
+      if (ownKeyCount > 0) {
+        if (state.steps + ownKeyCount > state.stepCap) {
+          leftStack.pop();
+          rightStack.pop();
+          return false;
+        }
+        if (state.chargeSteps) state.budget.reserve(ownKeyCount, "prepare");
+        state.steps += ownKeyCount;
+      }
+      const left = incoming as Record<PropertyKey, unknown>;
+      const right = trusted as Record<PropertyKey, unknown>;
+      matched = true;
+      for (let i = 0; i < ownKeyCount; i++) {
+        const key = keysB[i];
+        if (keysA[i] !== key && !Object.hasOwn(incoming, key)) {
+          matched = false;
+          break;
+        }
+        if (!sameStructuredValue(left[key], right[key], state, depth + 1)) {
+          matched = false;
+          break;
+        }
+      }
+    }
+  }
+  leftStack.pop();
+  rightStack.pop();
+  return matched;
+}
+
+/**
+ * Content equality between a freshly read package clone and a trusted
+ * validated snapshot. Walks both copies per reference with no pair memo,
+ * checks exact container prototypes, row order, own array keys, holes, and
+ * worker fields, and charges the same per-row units as the cold path. A row
+ * whose walk exceeds the cold-path bound returns `false` (declining reuse so
+ * the caller takes the cold path) without raising an error.
+ */
+export function samePackageStructure(
+  incoming: unknown,
+  trusted: CachedPackage,
+  budget: SearchRequestBudget,
+): boolean {
+  if (
+    !incoming ||
+    !trusted ||
+    typeof incoming !== "object" ||
+    typeof trusted !== "object" ||
+    Array.isArray(incoming) ||
+    Array.isArray(trusted)
+  )
+    return false;
+  const rootProtoA = Object.getPrototypeOf(incoming);
+  const rootProtoB = Object.getPrototypeOf(trusted);
+  if (
+    rootProtoA !== rootProtoB ||
+    (rootProtoA !== Object.prototype && rootProtoA !== null)
+  )
+    return false;
+
+  const leftPkg = incoming as Record<PropertyKey, unknown>;
+  const rightPkg = trusted as unknown as Record<PropertyKey, unknown>;
+  const hasEntries =
+    Object.hasOwn(incoming, "entries") &&
+    Object.hasOwn(trusted, "entries") &&
+    Array.isArray(rightPkg.entries);
+  if (!hasEntries) {
+    return sameStructuredValue(
+      incoming,
+      trusted,
+      {
+        budget,
+        stepCap: 64,
+        chargeSteps: true,
+        steps: 0,
+        leftStack: [],
+        rightStack: [],
+      },
+      0,
+    );
+  }
+
+  const keysA = Reflect.ownKeys(incoming);
+  const keysB = Reflect.ownKeys(trusted);
+  if (keysA.length !== keysB.length) return false;
+  const leftStack: object[] = [incoming];
+  const rightStack: object[] = [trusted];
+  const headerState: StructureState = {
+    budget,
+    stepCap: 64,
+    chargeSteps: false,
+    steps: 0,
+    leftStack,
+    rightStack,
+  };
+  for (let i = 0; i < keysB.length; i++) {
+    const key = keysB[i];
+    if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
+    if (key === "entries") continue;
+    if (headerState.steps + 1 > headerState.stepCap) return false;
+    headerState.steps++;
+    if (!sameStructuredValue(leftPkg[key], rightPkg[key], headerState, 1))
+      return false;
+  }
+
+  const leftEntries = leftPkg.entries;
+  const rightEntries = rightPkg.entries as unknown[];
+  if (
+    !Array.isArray(leftEntries) ||
+    Object.getPrototypeOf(leftEntries) !== Array.prototype ||
+    Object.getPrototypeOf(rightEntries) !== Array.prototype ||
+    leftEntries.length !== rightEntries.length
+  )
+    return false;
+  const entryKeysA = Reflect.ownKeys(leftEntries);
+  const entryKeysB = Reflect.ownKeys(rightEntries);
+  if (entryKeysA.length !== entryKeysB.length) return false;
+
+  leftStack.push(leftEntries);
+  rightStack.push(rightEntries);
+  const rowState: StructureState = {
+    budget,
+    stepCap: 0,
+    chargeSteps: false,
+    steps: 0,
+    leftStack,
+    rightStack,
+  };
+  const canEnsure = typeof budget.ensure === "function";
+  const len = rightEntries.length;
+  const compareRow = (leftRow: unknown, rightRow: unknown): boolean => {
+    if (canEnsure) budget.ensure(1, "prepare");
+    const rowCharge =
+      1 + entryContentUnits(leftRow, canEnsure ? budget : undefined, "prepare");
+    budget.reserve(rowCharge, "prepare");
+    rowState.steps = 0;
+    rowState.stepCap = 40 + 6 * rowCharge;
+    return sameStructuredValue(leftRow, rightRow, rowState, 2);
+  };
+
+  if (
+    entryKeysB.length === len + 1 &&
+    entryKeysB[len] === "length" &&
+    entryKeysA[len] === "length"
+  ) {
+    for (let i = 0; i < len; i++) {
+      if (!compareRow(leftEntries[i], rightEntries[i])) return false;
+    }
+    return true;
+  }
+
+  const leftEntriesRecord = leftEntries as unknown as Record<
+    PropertyKey,
+    unknown
+  >;
+  const rightEntriesRecord = rightEntries as unknown as Record<
+    PropertyKey,
+    unknown
+  >;
+  for (let i = 0; i < entryKeysB.length; i++) {
+    const key = entryKeysB[i];
+    if (key === "length") continue;
+    if (entryKeysA[i] !== key && !Object.hasOwn(leftEntries, key)) return false;
+    if (typeof key === "string" && /^\d+$/.test(key)) {
+      if (!compareRow(leftEntriesRecord[key], rightEntriesRecord[key]))
+        return false;
+    } else {
+      if (headerState.steps + 1 > headerState.stepCap) return false;
+      headerState.steps++;
+      if (
+        !sameStructuredValue(
+          leftEntriesRecord[key],
+          rightEntriesRecord[key],
+          headerState,
+          2,
+        )
+      )
+        return false;
+    }
+  }
+  return true;
+}
+
+function dropSnapshot(current: Client, key: number): void {
+  const entry = current.snapshots.get(key);
+  if (!entry) return;
+  current.snapshots.delete(key);
+  const byLang = current.byPackage.get(entry.pkg);
+  if (byLang?.get(entry.language) === key) {
+    byLang.delete(entry.language);
+    if (byLang.size === 0) current.byPackage.delete(entry.pkg);
+  }
+}
+
 function stopWorker(current: Client, error: Error) {
   current.worker.terminate();
   current.retained.clear();
   current.preparing.clear();
   current.preparingKeys.clear();
+  current.snapshots.clear();
+  current.byPackage = new WeakMap();
   for (const waiting of current.pending.values()) waiting.reject(error);
   current.pending.clear();
   if (client === current) {
@@ -243,8 +560,12 @@ function forgetPreparing(current: Client, request: number): void {
   if (key === undefined) return;
   current.preparing.delete(request);
   const left = (current.preparingKeys.get(key) ?? 1) - 1;
-  if (left <= 0) current.preparingKeys.delete(key);
-  else current.preparingKeys.set(key, left);
+  if (left <= 0) {
+    current.preparingKeys.delete(key);
+    if (!current.retained.has(key)) dropSnapshot(current, key);
+  } else {
+    current.preparingKeys.set(key, left);
+  }
 }
 function searchWorker(): Client {
   if (client) return client;
@@ -260,6 +581,9 @@ function searchWorker(): Client {
     cacheRevision: -1,
     preparing: new Map(),
     preparingKeys: new Map(),
+    snapshots: new Map(),
+    byPackage: new WeakMap(),
+    aliases: new WeakMap(),
   };
   worker.onmessage = ({ data }) => {
     // Cache acknowledgments also matter after that request's consumer aborts.
@@ -271,8 +595,13 @@ function searchWorker(): Client {
       Number.isSafeInteger(data.cacheRevision) &&
       !stale
     ) {
-      current.retained.clear();
-      for (const key of data.retained) current.retained.add(key);
+      const nextRetained = new Set<number>();
+      for (const key of data.retained)
+        if (typeof key === "number") nextRetained.add(key);
+      for (const oldKey of current.retained)
+        if (!nextRetained.has(oldKey) && !current.preparingKeys.has(oldKey))
+          dropSnapshot(current, oldKey);
+      current.retained = nextRetained;
       current.cacheRevision = data.cacheRevision;
     }
     if (!data.started) forgetPreparing(current, data.request);
@@ -310,7 +639,7 @@ function searchWorker(): Client {
   client = current;
   return current;
 }
-/** A package object comes from the store's revision-aware, bounded cache. */
+/** A package object comes from a fresh storage read or an acquired snapshot. */
 export async function searchPackage(
   pkg: CachedPackage,
   language: string,
@@ -339,19 +668,67 @@ export async function searchPackage(
   // fallback.
   const texts = tooLong ? [] : accepted;
   const { signal, ...workerOptions } = options;
-  let identity: string | number | undefined =
-    packageStorageKey(pkg) ?? packageIds.get(pkg);
-  if (identity === undefined) {
-    identity = ++packageId;
-    packageIds.set(pkg, identity);
-  }
-  const key = JSON.stringify([language, identity]);
-  // One client budget spans the transfer and the worker request below: the
-  // worker continues it from the posted state and the reply continues it back.
+  // One client budget spans equality checks, transfer, and the worker request
+  // below: the worker continues it from the posted state and the reply
+  // continues it back.
   const clientBudget = SearchRequestBudget.for(searchMetrics(), {
     workLimit: options.workLimit,
     deadlineMs: options.deadlineMs,
   });
+  const storageHint = packageStorageKey(pkg);
+  let matchedKey: number | undefined;
+  let resolvedPkg: CachedPackage = pkg;
+  if (client) {
+    // Same acquired snapshot used again in the same language.
+    const byLang = client.byPackage.get(pkg);
+    const directKey = byLang?.get(language);
+    if (directKey !== undefined) {
+      if (
+        client.retained.has(directKey) ||
+        client.preparingKeys.has(directKey)
+      ) {
+        matchedKey = directKey;
+      } else {
+        byLang!.delete(language);
+        if (byLang!.size === 0) client.byPackage.delete(pkg);
+      }
+    }
+    // Fresh clone already verified structurally equal to a retained snapshot.
+    if (matchedKey === undefined) {
+      const alias = client.aliases.get(pkg);
+      if (
+        alias &&
+        alias.language === language &&
+        (client.retained.has(alias.key) || client.preparingKeys.has(alias.key))
+      ) {
+        const trusted = client.snapshots.get(alias.key);
+        if (trusted) {
+          matchedKey = alias.key;
+          resolvedPkg = trusted.pkg;
+        }
+      }
+    }
+    // Fresh clone with the same durable storage revision: reuse only after
+    // content equality against a confirmed retained snapshot (checking most
+    // recently retained snapshots first).
+    if (matchedKey === undefined && storageHint !== undefined) {
+      for (const candidateKey of Array.from(client.retained).reverse()) {
+        const entry = client.snapshots.get(candidateKey);
+        if (
+          entry &&
+          entry.language === language &&
+          entry.storageHint === storageHint &&
+          samePackageStructure(pkg, entry.pkg, clientBudget)
+        ) {
+          matchedKey = candidateKey;
+          resolvedPkg = entry.pkg;
+          client.aliases.set(pkg, { key: candidateKey, language });
+          break;
+        }
+      }
+    }
+  }
+  const key = matchedKey ?? ++packageId;
   const send = (force = false) => {
     signal?.throwIfAborted();
     const current = searchWorker();
@@ -361,6 +738,17 @@ export async function searchPackage(
     const request = ++requestId;
     // Announce a transfer without evicting any confirmed warm package.
     if (prepare) {
+      current.snapshots.set(key, {
+        pkg: resolvedPkg,
+        language,
+        storageHint,
+      });
+      let byLang = current.byPackage.get(resolvedPkg);
+      if (!byLang) {
+        byLang = new Map();
+        current.byPackage.set(resolvedPkg, byLang);
+      }
+      byLang.set(language, key);
       current.preparing.set(request, key);
       current.preparingKeys.set(
         key,
@@ -427,12 +815,10 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
-          for (const entry of pkg.entries) {
+          for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
-            clientBudget.reserve(
-              1 + entryContentUnits(entry, clientBudget, "prepare"),
-              "prepare",
-            );
+            const content = entryContentUnits(entry, clientBudget, "prepare");
+            clientBudget.reserve(1 + content, "prepare");
           }
         }
         current.worker.postMessage({
@@ -441,7 +827,7 @@ export async function searchPackage(
           language,
           queries: texts,
           options: workerOptions,
-          ...(prepare ? { pkg } : {}),
+          ...(prepare ? { pkg: resolvedPkg } : {}),
           budget: clientBudget.snapshot(),
         });
       } catch (error) {
@@ -477,7 +863,7 @@ export async function searchPackage(
   continued.check("search");
   return {
     ...result,
-    hits: resolvePackageHits(pkg, result.hits, continued),
+    hits: resolvePackageHits(resolvedPkg, result.hits, continued),
   };
 }
 /**

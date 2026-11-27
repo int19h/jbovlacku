@@ -444,6 +444,10 @@ pub fn identity(seed: &[u8]) -> std::result::Result<String, JsValue> {
 pub fn runtime_word_identifier(bytes: &[u8]) -> std::result::Result<String, JsValue> {
     jvc_core::word_id(&parse_json(bytes).map_err(fail)?).map_err(fail)
 }
+#[wasm_bindgen]
+pub fn valid_word_id_spellings(spellings: &str) -> bool {
+    spellings.split('\0').all(jvc_core::valid_word_id_spelling)
+}
 
 #[wasm_bindgen]
 pub fn prepare_signing(bytes: &[u8]) -> std::result::Result<Vec<u8>, JsValue> {

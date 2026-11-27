@@ -17,12 +17,19 @@ import {
   type Route,
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { downloadPackage, isV2, type CachedPackage } from "../data/search.ts";
+import {
+  downloadPackage,
+  isV2,
+  type CachedPackage,
+  type PackageDownloadOptions,
+} from "../data/search.ts";
 import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
   savedRow,
+  savedRowListCache,
+  savedSpellingChecks,
   savedWordId,
 } from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
@@ -47,7 +54,8 @@ async function packageFor(
   app: App,
   language: string,
   signal: AbortSignal,
-): Promise<CachedPackage | null> {
+  onVersion2Entry?: PackageDownloadOptions["onVersion2Entry"],
+): Promise<{ pkg: CachedPackage; fresh: boolean } | null> {
   let fallback: CachedPackage | null = null;
   // The package state when this visit started. A package that the user
   // removed keeps a revision but no package, so a visit must not save it
@@ -66,23 +74,35 @@ async function packageFor(
   }
   // Prefer the server's current package so new claims appear. Fall back to the cache.
   try {
-    const fresh = await downloadPackage(language, { signal });
+    const fresh = await downloadPackage(language, { signal, onVersion2Entry });
     fallback = fresh;
     if (fresh.version === 2) {
       if (app.session.storageAvailable && !removed)
         await app.store
           .put("packages", language, fresh, expected ?? null)
           .catch(() => {});
-      return fresh;
+      return { pkg: fresh, fresh: true };
     }
   } catch {}
-  if (!app.session.storageAvailable) return fallback;
+  if (!app.session.storageAvailable)
+    return fallback && { pkg: fallback, fresh: true };
   // A storage failure counts as no saved package. An unusable saved
   // package raises PackageValidationError.
   const cached = savedPackage(
     await app.store.get("packages", language).catch(() => undefined),
+    language,
   );
-  return cached?.version === 2 ? cached : fallback;
+  if (cached) {
+    if (cached.version === 2) return { pkg: cached, fresh: false };
+    const spellings = savedSpellingChecks();
+    const checkedLists = savedRowListCache();
+    for (const row of cached.entries)
+      spellings.add(
+        savedRow(row, cached.version, language, checkedLists).word.spelling,
+      );
+    spellings.finish();
+  }
+  return fallback && { pkg: fallback, fresh: true };
 }
 interface RafsiWord {
   spelling: string;
@@ -119,7 +139,7 @@ export async function wordsWithRafsi(
     // a language has no package.
     let result;
     try {
-      const pkg = await packageFor(app, language, signal);
+      const pkg = (await packageFor(app, language, signal))?.pkg;
       if (!pkg || pkg.version !== 2) {
         limited = true;
         continue;
@@ -129,8 +149,9 @@ export async function wordsWithRafsi(
       // any row that the search returns, and the worker accepts some rafsi
       // that the core cannot read.
       let incomplete = false;
+      const checkedLists = savedRowListCache();
       for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version);
+        const entry = savedRow(row, pkg.version, language, checkedLists);
         if (isV2(entry) && entry.rafsi_complete === false) incomplete = true;
       }
       result = await searchPackage(pkg, language, [rafsi], {
@@ -315,7 +336,7 @@ export async function rafsiPage(
   if (words.unavailable) {
     main.append(
       p(
-        "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
+        "Rafsi lookup needs a usable version 2 search package. Rafsi coverage is unknown.",
         "notice",
       ),
     );
@@ -331,7 +352,7 @@ export async function rafsiPage(
   if (!words.length) {
     main.append(
       p(
-        `No retained claim assigns ${rafsi} to a word in this server's search packages. Coverage is limited to retained claim bodies.`,
+        `No retained claim assigns ${rafsi} to a word in the packages checked for this lookup. Coverage is limited to the retained claim bodies in those packages.`,
         "small",
       ),
     );
@@ -437,9 +458,7 @@ export async function claimPage(
   // Only the core's spelling refusal names no word. Any other failure
   // from the core is rethrown and reported as itself.
   const id = spelling
-    ? nullOnSpellingRefusal(() =>
-        deriveWordId({ language: "jbo", spelling }),
-      )
+    ? nullOnSpellingRefusal(() => deriveWordId({ language: "jbo", spelling }))
     : null;
   if (id === null) {
     main.append(p("This link names no word.", "notice"));
@@ -535,14 +554,14 @@ export async function claimPage(
       } else if (lookup.unavailable)
         competition.append(
           p(
-            "Rafsi conflict lookup is unavailable. Version 2 package data is missing. Review the claim with that coverage limit.",
+            "Rafsi conflict lookup is unavailable without a usable version 2 search package. Review the claim with that coverage limit.",
             "notice",
           ),
         );
       else
         competition.append(
           p(
-            `No retained claim of ${value} for another word in this server's packages. Coverage is limited to retained claim bodies.`,
+            `No retained claim of ${value} for another word in the packages checked for this lookup. Coverage is limited to the retained claim bodies in those packages.`,
             "small",
           ),
         );
@@ -641,32 +660,56 @@ async function resolvePair(
   app: App,
   pair: string,
   signal: AbortSignal,
-): Promise<{ spelling: string; language: string; rafsi: string } | null> {
-  const languages = new Set<string>([
-    app.session.preferences.definitionLanguage,
-  ]);
-  if (app.session.storageAvailable)
-    for (const key of await app.store.keys("packages").catch(() => []))
-      languages.add(key);
+): Promise<RafsiWord | null> {
+  const preferred = app.session.preferences.definitionLanguage;
   // An unusable package does not hide a usable package of another
   // language. Its error is raised only when no package names the pair.
   let invalid: PackageValidationError | null = null;
-  for (const language of languages)
+  async function pick(language: string): Promise<RafsiWord | null> {
     try {
-      const pkg = await packageFor(app, language, signal);
-      if (!pkg) continue;
-      for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version);
-        if (!isV2(entry)) continue;
-        const id = savedWordId(entry.word);
-        for (const rafsi of (entry as PackageEntryV2).rafsi)
-          // An empty array slot is no rafsi, as in the worker's checks.
-          if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair)
-            return { spelling: entry.word.spelling, language, rafsi };
+      let found: RafsiWord | undefined;
+      const match = (entry: PackageEntryV2, id: string) => {
+        if (found) return;
+        for (const rafsi of entry.rafsi)
+          if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair) {
+            found = { spelling: entry.word.spelling, language, rafsi };
+            break;
+          }
+      };
+      const loaded = await packageFor(app, language, signal, match);
+      if (!loaded || loaded.pkg.version !== 2) return null;
+      if (!loaded.fresh) {
+        // A failed download can leave a candidate from a checked prefix.
+        found = undefined;
+        const spellings = savedSpellingChecks();
+        const checkedLists = savedRowListCache();
+        for (const row of loaded.pkg.entries) {
+          const entry = savedRow(
+            row,
+            loaded.pkg.version,
+            language,
+            checkedLists,
+          );
+          if (isV2(entry) && !found && entry.rafsi.length)
+            match(entry, savedWordId(entry.word));
+          else spellings.add(entry.word.spelling);
+        }
+        spellings.finish();
       }
+      return found ?? null;
     } catch (error) {
       if (!(error instanceof PackageValidationError)) throw error;
       invalid ??= error;
+      return null;
+    }
+  }
+  const first = await pick(preferred);
+  if (first) return first;
+  if (app.session.storageAvailable)
+    for (const key of await app.store.keys("packages").catch(() => [])) {
+      if (key === preferred) continue;
+      const other = await pick(key);
+      if (other) return other;
     }
   if (invalid) throw invalid;
   return null;
@@ -694,7 +737,7 @@ export async function rafsiPairPage(
     main.append(
       el("h1", { class: "page", text: "Rafsi pair unavailable" }),
       p(
-        "A pair ID names a word and a rafsi, but the ID alone does not spell them. No retained claim in this server's search packages matches this pair, so the word and the rafsi are unknown here. Coverage is limited to retained claim bodies.",
+        "A pair ID names a word and a rafsi. Lookup did not resolve this pair, so its word and rafsi are unknown here.",
         "notice",
       ),
       el("p", { class: "fingerprint", text: pair }),
@@ -726,7 +769,8 @@ export async function rafsiPairPage(
         class: "touch-link",
       }),
     ),
-    await pairCard(app, context, found, found.rafsi),
-    el("p", { class: "fingerprint", text: pair }),
   );
+  const card = await pairCard(app, context, found, found.rafsi);
+  if (context.live())
+    main.append(card, el("p", { class: "fingerprint", text: pair }));
 }

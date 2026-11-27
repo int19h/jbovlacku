@@ -78,7 +78,7 @@ test("consented remote nearby meanings preserve literal punctuation", async ({
           response.request().method() === "POST",
       ),
       page
-        .getByRole("button", { name: "search this server", exact: true })
+        .getByRole("button", { name: "allow server search", exact: true })
         .click(),
     ]);
     expect(response.status()).toBe(200);

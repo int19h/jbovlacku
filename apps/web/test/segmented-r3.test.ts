@@ -250,6 +250,8 @@ test("an empty nearby meaning still reads the current package mode", async ({
   await expect(
     page.getByLabel("Other language tag", { exact: true }),
   ).toBeHidden();
+  await expect(panel).not.toContainText("from the downloaded package");
+  await page.getByRole("textbox", { name: "Meaning", exact: true }).fill("travel");
   await expect(panel).toContainText("from the downloaded package");
 });
 
@@ -271,7 +273,7 @@ for (const [label, corrupt] of [
       "search package is invalid",
     );
     await expect(page.locator("main")).toContainText(
-      "No downloaded search package",
+      "The saved search package for English is invalid.",
     );
     await expect(page.locator("main")).not.toContainText(
       "Local search package from snapshot",
@@ -492,7 +494,7 @@ for (const language of ["en", "fr"])
         );
         return packageSearchStats()?.metrics.queryWords;
       });
-    expect(await queryWordCount()).toBe(0);
+    await expect.poll(queryWordCount).toBe(0);
     await page.evaluate(async (language) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft } = await import(String("/src/model/draft.ts"));

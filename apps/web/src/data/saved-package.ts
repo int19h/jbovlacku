@@ -17,18 +17,21 @@
  *
  * For each field that a page reads before the search worker's verdict, the
  * rule uses the worker's own test (`validateCachedPackage` and
- * `validateEntry`). The worker still validates every package that a page
- * sends to it, and also checks what no page reads first: exact field sets,
- * the row order, the attribution, and that each row's language is the
- * package language. The core checks each spelling where a page derives the
- * word ID. The rule accepts every package that the worker accepts, with one
- * exception: a rafsi with a lone surrogate. The worker accepts any rafsi
- * string, but the core cannot serialize such a rafsi into a pair ID.
+ * `validateEntry`). The worker enforces every page rule (including lone
+ * surrogate checks on `rafsi` and storage-key language tags) and also checks
+ * what no page reads first: exact field sets, strictly ascending event order,
+ * version 2 attribution, `search_status` and `search_view` pairing, and
+ * rejection of non-function own `some` properties on row arrays. The
+ * core checks each spelling where a page derives the word ID.
  *
  * This module has no server or browser-storage dependency, so models and
  * Node unit tests can load it.
  */
-import { wordId } from "../../../../packages/core/src/browser.ts";
+import {
+  validWordIdSpellings,
+  wordId,
+  wordSpellingStatus,
+} from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "./search.ts";
 import {
   eventId,
@@ -51,9 +54,9 @@ export class PackageValidationError extends Error {
 
 /**
  * Matches an unpaired surrogate. The core cannot serialize such a rafsi into
- * a pair ID, although the worker accepts any rafsi string.
+ * a pair ID, so both page readers and the worker reject it.
  */
-const LONE_SURROGATE = /\p{Cs}/u;
+export const LONE_SURROGATE = /\p{Cs}/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -63,11 +66,12 @@ export function fields(
   value: unknown,
   names: string[],
 ): value is Record<string, any> {
-  return (
-    isRecord(value) &&
-    Object.keys(value).length === names.length &&
-    names.every((name) => Object.hasOwn(value, name))
-  );
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== names.length) return false;
+  for (let i = 0; i < names.length; i++)
+    if (keys[i] !== names[i] && !Object.hasOwn(value, names[i])) return false;
+  return true;
 }
 
 /**
@@ -77,7 +81,7 @@ export function fields(
  * cannot replace it.
  */
 const anyItem = (list: unknown[], test: (item: unknown) => boolean) =>
-  Array.prototype.some.call(list, test);
+  list.length > 0 && Array.prototype.some.call(list, test);
 
 /** Rafsi spellings per version 2 entry. The server applies the same bound. */
 export const PACKAGE_RAFSI_LIMIT = 64;
@@ -89,9 +93,13 @@ export const PACKAGE_RAFSI_LIMIT = 64;
  * `PackageValidationError`. The rows are not checked here: readers check
  * each row with `savedRow`.
  */
-export function savedPackage(value: unknown): CachedPackage | null {
+export function savedPackage(
+  value: unknown,
+  language?: string,
+): CachedPackage | null {
   if (value === undefined) return null;
   if (
+    (language !== undefined && !languageTag(language)) ||
     !isRecord(value) ||
     !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
@@ -114,50 +122,73 @@ export function savedPackage(value: unknown): CachedPackage | null {
 
 /** The fields that only a version 2 row carries. */
 const V2_ONLY = ["issuer", "notes", "rafsi", "rafsi_complete", "attribution"];
+const WORD_FIELDS = ["language", "spelling"];
+const CLASSIFICATION_FIELDS = ["kind", "selmaho"];
+const GLOSS_FIELDS = ["language", "text", "sense"];
 
 /**
- * One saved row of a package of the given version, checked with the
- * worker's tests (`validateEntry`) for each field that main-thread readers
- * use: the event, language, word, plain text, body, glosses and
+ * Check a saved row against the package language and version. Use the
+ * worker's tests (`validateEntry`) for fields that pages read:
+ * the event, language, word, plain text, body, glosses and
  * classification, and for a version 2 row the issuer, notes and rafsi
  * list. A version 1 row must carry no version 2 field, and a version 2 row
- * must carry the issuer and the rafsi list. The rule is stricter than the
- * worker in one case: a rafsi with a lone surrogate. A row that fails
- * raises `PackageValidationError`.
+ * must carry the issuer and the rafsi list (with no lone surrogates). A row
+ * that fails raises `PackageValidationError`.
  */
+/** Per-package validated list cache so shared row lists are checked once. */
+export interface SavedRowListCache {
+  selmaho?: Set<unknown>;
+  glosses?: Set<unknown>;
+  rafsi?: Set<unknown>;
+}
+
+export const savedRowListCache = (): SavedRowListCache => ({});
+
 export function savedRow(
   entry: unknown,
   version: 1 | 2 | undefined,
+  language: string,
+  checkedLists?: SavedRowListCache,
 ): PackageEntry {
   if (!isRecord(entry)) throw new PackageValidationError();
   const { word, classification, glosses } = entry;
   let usable =
     eventId(entry.event) &&
+    entry.language === language &&
     languageTag(entry.language) &&
-    fields(word, ["language", "spelling"]) &&
+    fields(word, WORD_FIELDS) &&
     word.language === "jbo" &&
     typeof word.spelling === "string" &&
     typeof entry.plain_text === "string" &&
     (entry.body === null || hashId(entry.body)) &&
     Array.isArray(glosses) &&
     glosses.length <= 8192 &&
-    fields(classification, ["kind", "selmaho"]) &&
+    fields(classification, CLASSIFICATION_FIELDS) &&
     lexicalKinds.includes(classification.kind) &&
     Array.isArray(classification.selmaho);
-  if (usable)
-    usable = !anyItem(
-      (classification as { selmaho: unknown[] }).selmaho,
-      (item) => typeof item !== "string",
-    );
-  if (usable)
-    usable = !anyItem(
-      glosses as unknown[],
-      (gloss) =>
-        !fields(gloss, ["language", "text", "sense"]) ||
-        !languageTag(gloss.language) ||
-        typeof gloss.text !== "string" ||
-        !(gloss.sense === null || typeof gloss.sense === "string"),
-    );
+  if (usable) {
+    const selmaho = (classification as { selmaho: unknown[] }).selmaho;
+    if (selmaho.length < 4 || !checkedLists?.selmaho?.has(selmaho)) {
+      usable = !anyItem(selmaho, (item) => typeof item !== "string");
+      if (usable && checkedLists && selmaho.length >= 4)
+        (checkedLists.selmaho ??= new Set()).add(selmaho);
+    }
+  }
+  if (usable) {
+    const glossList = glosses as unknown[];
+    if (glossList.length < 4 || !checkedLists?.glosses?.has(glossList)) {
+      usable = !anyItem(
+        glossList,
+        (gloss) =>
+          !fields(gloss, GLOSS_FIELDS) ||
+          !languageTag(gloss.language) ||
+          typeof gloss.text !== "string" ||
+          !(gloss.sense === null || typeof gloss.sense === "string"),
+      );
+      if (usable && checkedLists && glossList.length >= 4)
+        (checkedLists.glosses ??= new Set()).add(glossList);
+    }
+  }
   if (usable && version === 2) {
     const rafsi = entry.rafsi;
     usable =
@@ -167,11 +198,17 @@ export function savedRow(
       rafsi.length <= PACKAGE_RAFSI_LIMIT &&
       (entry.rafsi_complete === undefined ||
         typeof entry.rafsi_complete === "boolean");
-    if (usable)
-      usable = !anyItem(
-        rafsi as unknown[],
-        (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
-      );
+    if (usable) {
+      const rafsiList = rafsi as unknown[];
+      if (rafsiList.length < 4 || !checkedLists?.rafsi?.has(rafsiList)) {
+        usable = !anyItem(
+          rafsiList,
+          (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
+        );
+        if (usable && checkedLists && rafsiList.length >= 4)
+          (checkedLists.rafsi ??= new Set()).add(rafsiList);
+      }
+    }
   } else if (usable)
     for (const name of V2_ONLY) if (Object.hasOwn(entry, name)) usable = false;
   if (!usable) throw new PackageValidationError();
@@ -188,4 +225,35 @@ export function savedWordId(word: {
   } catch {
     throw new PackageValidationError();
   }
+}
+
+/** Check a row's spelling when the caller does not need its ID. */
+export function checkSavedWord(word: {
+  language: "jbo";
+  spelling: string;
+}): void {
+  const status = wordSpellingStatus(word.spelling);
+  if (status === "valid") return;
+  if (status === "invalid" || !validWordIdSpellings([word.spelling]))
+    throw new PackageValidationError();
+}
+
+/** Check spellings in small batches during the row walk. Finish before using the package. */
+export function savedSpellingChecks() {
+  const spellings: string[] = [];
+  const finish = () => {
+    if (spellings.length && !validWordIdSpellings(spellings))
+      throw new PackageValidationError();
+    spellings.length = 0;
+  };
+  return {
+    add(spelling: string) {
+      const status = wordSpellingStatus(spelling);
+      if (status === "valid") return;
+      if (status === "invalid") throw new PackageValidationError();
+      spellings.push(spelling);
+      if (spellings.length === 128) finish();
+    },
+    finish,
+  };
 }

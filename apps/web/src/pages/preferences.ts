@@ -27,6 +27,8 @@ import {
   PackageValidationError,
   savedPackage,
   savedRow,
+  savedRowListCache,
+  savedSpellingChecks,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -310,7 +312,7 @@ async function preferencesBody(context: RenderContext, app: App) {
       { value: "remote", label: "Remote" },
     ],
     value: prefs.searchMode,
-    hint: `Local uses downloaded packages for word and definition searches. Without a downloaded package for a language, local mode asks the server. Remote sends each query to ${selfPeer.label}. Meaning search sends queries to the server and provider after consent.`,
+    hint: `Local uses downloaded packages for word and definition searches. If no usable package is available for a language, local mode asks the server. Remote sends each query to ${selfPeer.label}. Meaning search sends queries to the server and provider after consent.`,
   });
   // The remote search disclosure stays in place under the control.
   const modeDisclosure = p("", "small");
@@ -618,7 +620,7 @@ async function preferencesBody(context: RenderContext, app: App) {
       let cached: CachedPackage | null = null;
       let invalid = false;
       try {
-        cached = savedPackage(await app.store.get("packages", key));
+        cached = savedPackage(await app.store.get("packages", key), key);
       } catch (error) {
         if (!(error instanceof PackageValidationError)) throw error;
         invalid = true;
@@ -627,11 +629,7 @@ async function preferencesBody(context: RenderContext, app: App) {
         text: invalid
           ? INVALID_PACKAGE_MESSAGE
           : cached
-            ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
-                cached.downgrade
-                  ? `. Version 1 was saved instead of version 2: ${packageCause(cached.downgrade)}`
-                  : ""
-              }`
+            ? "Checking saved package…"
             : "unreadable",
       });
       const row = el("div", { class: "row" });
@@ -659,15 +657,23 @@ async function preferencesBody(context: RenderContext, app: App) {
         ),
       );
       list.append(row);
-      // This page reads no rows, so it checks them in a task of its own
-      // after the row is shown: `renderPackages` runs the checks of a list
-      // after it publishes that list. A valid package keeps its count, and
-      // an unusable one shows the message in its place.
+      // Show the Remove control first. Give the count after the row checks pass.
       const pkg = cached;
       if (pkg)
         checks.push(() => {
           try {
-            for (const entry of pkg.entries) savedRow(entry, pkg.version);
+            const spellings = savedSpellingChecks();
+            const checkedLists = savedRowListCache();
+            for (const entry of pkg.entries)
+              spellings.add(
+                savedRow(entry, pkg.version, key, checkedLists).word.spelling,
+              );
+            spellings.finish();
+            detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
+              pkg.downgrade
+                ? `. Version 1 was saved instead of version 2: ${packageCause(pkg.downgrade)}`
+                : ""
+            }`;
           } catch (error) {
             if (!(error instanceof PackageValidationError)) throw error;
             detail.textContent = INVALID_PACKAGE_MESSAGE;

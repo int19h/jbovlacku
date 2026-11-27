@@ -380,7 +380,7 @@ export class LocalStore {
   readonly database: Promise<IDBDatabase>;
   private readonly packageCache = new Map<
     string,
-    { revision: unknown; value: unknown }
+    { revision: string; value: unknown }
   >();
   constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
@@ -444,26 +444,40 @@ export class LocalStore {
         const tx = db.transaction(["packages", "packageRevisions"]);
         const revision = tx.objectStore("packageRevisions").get(id);
         revision.onsuccess = () => {
-          const old = this.packageCache.get(id);
-          if (old && old.revision === revision.result) {
+          const rev =
+            typeof revision.result === "string" ? revision.result : undefined;
+          if (rev !== undefined) {
+            const old = this.packageCache.get(id);
+            if (old && old.revision === rev) {
+              this.packageCache.delete(id);
+              this.packageCache.set(id, old);
+              resolve(old.value as T | undefined);
+              return;
+            }
+          } else {
             this.packageCache.delete(id);
-            this.packageCache.set(id, old);
-            resolve(old.value as T | undefined);
-            return;
           }
           const request = tx.objectStore("packages").get(id);
           request.onsuccess = () => {
-            if (request.result && typeof request.result === "object")
+            if (
+              request.result &&
+              typeof request.result === "object" &&
+              rev !== undefined
+            ) {
               packageKeys.set(
                 request.result,
-                JSON.stringify([db.name, id, revision.result ?? null]),
+                JSON.stringify([db.name, id, rev]),
               );
-            this.packageCache.set(id, {
-              revision: revision.result,
-              value: request.result,
-            });
-            if (this.packageCache.size > 2)
-              this.packageCache.delete(this.packageCache.keys().next().value!);
+              this.packageCache.delete(id);
+              this.packageCache.set(id, {
+                revision: rev,
+                value: request.result,
+              });
+              if (this.packageCache.size > 2)
+                this.packageCache.delete(this.packageCache.keys().next().value!);
+            } else {
+              this.packageCache.delete(id);
+            }
             resolve(request.result);
           };
         };
@@ -487,6 +501,16 @@ export class LocalStore {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
+  }
+  /** Read keys and packages in the same transaction so the pairs stay aligned. */
+  async listPackages(): Promise<[IDBValidKey, unknown][]> {
+    const db = await this.database;
+    const store = db.transaction("packages").objectStore("packages");
+    const [keys, values] = await Promise.all([
+      idbRequest(store.getAllKeys()),
+      idbRequest(store.getAll()),
+    ]);
+    return keys.map((key, index) => [key, values[index]]);
   }
   async keys(store: string): Promise<string[]> {
     const db = await this.database;
