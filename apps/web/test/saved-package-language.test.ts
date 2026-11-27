@@ -1309,9 +1309,9 @@ test("unmodified shared-collection clones keep warm reuse, and long-string cross
     }
 
     // Crossed k=16 square of 4x4096-char selmaho arrays differing only in row
-    // 255. Comparison (67,587) + cold path (203,264) = 270,851.
+    // 255. Comparison (67,584) + cold path (203,264) = 270,848.
     const e1bDb = `e1b-${Date.now()}`;
-    const e1bExactLimit = 270_851;
+    const e1bExactLimit = 270_848;
     let e1bPassPrepared = false;
     let e1bBelowError = "";
     try {
@@ -1376,4 +1376,155 @@ test("unmodified shared-collection clones keep warm reuse, and long-string cross
   expect(result.e1aLowLimitError).toBe("SearchBudgetError:prepare");
   expect(result.e1bPassPrepared).toBe(true);
   expect(result.e1bBelowError).toBe("SearchBudgetError:prepare");
+});
+
+test("empty saved packages reuse on fresh reads at zero budget, keep overlong-query errors, and spend zero units across eviction fallback", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const searchView = "jve1:" + "b".repeat(64);
+    const run = async (
+      pkg: any,
+      lang: string,
+      queries: string[],
+      workLimit?: number,
+    ) => {
+      try {
+        const res: any = await searchPackage(pkg, lang, queries, {
+          patterns: false,
+          ...(workLimit === undefined ? {} : { workLimit }),
+        });
+        return {
+          prepared: res.prepared,
+          spent: res.budget?.spent ?? null,
+          totals: res.totals,
+        };
+      } catch (err: any) {
+        return { error: err.constructor.name, phase: err.phase ?? null };
+      }
+    };
+
+    const versions: any[] = [];
+    for (const [label, pkg, positiveLimit] of [
+      ["v1", { version: 1 as const, snapshot, entries: [] }, 2],
+      [
+        "v2-view",
+        {
+          version: 2 as const,
+          snapshot,
+          search_view: searchView,
+          entries: [],
+        },
+        4,
+      ],
+    ] as const) {
+      const db = `empty-zero-${label}-${Date.now()}`;
+      try {
+        const store = new LocalStore(db);
+        await store.put("packages", "en", pkg);
+        const get = () => new LocalStore(db).get("packages", "en");
+        const coldObj = await get();
+        const coldEmpty = await run(coldObj, "en", [], 0);
+        const freshZeroObj = await get();
+        const freshZero = await run(freshZeroObj, "en", [], 0);
+        const freshPos = await run(await get(), "en", [], positiveLimit);
+        const freshOverlong = await run(
+          await get(),
+          "en",
+          ["x".repeat(8193)],
+          0,
+        );
+        versions.push({
+          label,
+          distinct: freshZeroObj !== coldObj,
+          coldEmpty,
+          freshZero,
+          freshPos,
+          freshOverlong,
+        });
+      } finally {
+        indexedDB.deleteDatabase(db);
+      }
+    }
+
+    // Eviction and cold retry on valid empty v2 packages must still spend 0 units.
+    const evictDb = `empty-evict-${Date.now()}`;
+    let evictResult: any;
+    try {
+      const store = new LocalStore(evictDb);
+      const emptyV2 = {
+        version: 2 as const,
+        snapshot,
+        search_view: searchView,
+        entries: [],
+      };
+      for (const lang of ["en", "fr", "de"])
+        await store.put("packages", lang, emptyV2);
+      const firstEn = await run(await store.get("packages", "en"), "en", []);
+      const [freshEn, fr, de] = await Promise.all(
+        ["en", "fr", "de"].map((lang) =>
+          new LocalStore(evictDb).get("packages", lang),
+        ),
+      );
+      const [frRes, deRes, retriedEn] = await Promise.all([
+        run(fr, "fr", []),
+        run(de, "de", []),
+        run(freshEn, "en", []),
+      ]);
+      evictResult = { firstEn, frRes, deRes, retriedEn };
+    } finally {
+      indexedDB.deleteDatabase(evictDb);
+    }
+
+    return { versions, evictResult };
+  });
+
+  for (const item of result.versions) {
+    expect(item.distinct, item.label).toBe(true);
+    expect(item.coldEmpty, item.label).toEqual({
+      prepared: true,
+      spent: 0,
+      totals: [],
+    });
+    expect(item.freshZero, item.label).toEqual({
+      prepared: false,
+      spent: 0,
+      totals: [],
+    });
+    expect(item.freshPos, item.label).toEqual({
+      prepared: false,
+      spent: 0,
+      totals: [],
+    });
+    expect(item.freshOverlong, item.label).toEqual({
+      error: "SearchQueryTooLongError",
+      phase: null,
+    });
+  }
+  expect(result.evictResult.firstEn).toEqual({
+    prepared: true,
+    spent: 0,
+    totals: [],
+  });
+  expect(result.evictResult.frRes).toEqual({
+    prepared: true,
+    spent: 0,
+    totals: [],
+  });
+  expect(result.evictResult.deRes).toEqual({
+    prepared: true,
+    spent: 0,
+    totals: [],
+  });
+  expect(result.evictResult.retriedEn).toEqual({
+    prepared: true,
+    spent: 0,
+    totals: [],
+  });
 });

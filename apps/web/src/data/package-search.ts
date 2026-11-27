@@ -249,12 +249,6 @@ interface StructureState {
   rightStack: object[];
 }
 
-function stringUnits(value: unknown): number {
-  return typeof value === "string" && value.length > 64
-    ? Math.ceil(value.length / 64)
-    : 0;
-}
-
 function sameStructuredValue(
   incoming: unknown,
   trusted: unknown,
@@ -434,17 +428,11 @@ export function samePackageStructure(
   const keysA = Reflect.ownKeys(incoming);
   const keysB = Reflect.ownKeys(trusted);
   if (keysA.length !== keysB.length) return false;
-  const headerUnits =
-    1 +
-    stringUnits(leftPkg.snapshot) +
-    stringUnits(leftPkg.search_view) +
-    stringUnits(leftPkg.downgrade);
-  budget.reserve(headerUnits, "prepare");
   const leftStack: object[] = [incoming];
   const rightStack: object[] = [trusted];
   const headerState: StructureState = {
     budget,
-    stepCap: 64 + headerUnits,
+    stepCap: 64,
     chargeSteps: false,
     steps: 0,
     leftStack,
