@@ -17,7 +17,7 @@ fn structural_histories<'a>(
     let mut entries = HashMap::with_capacity(nodes.len());
     let mut ready = Vec::new();
     for (id, node) in nodes {
-        let (parents, missing, invalid) = Graph::history_dependencies(nodes, lifecycle, node, 1);
+        let (parents, missing, invalid, _) = Graph::history_dependencies(nodes, lifecycle, node, 1);
         let history = History {
             invalid,
             missing: !missing.is_empty(),

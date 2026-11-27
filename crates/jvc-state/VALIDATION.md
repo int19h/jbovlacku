@@ -70,6 +70,36 @@ Set `JVC_CHROMIUM` if the browser executable is outside Playwright's normal cach
 The pure evaluator performs no peer retrieval. Service code owns retrieval deadlines and transport admission.
 A complete supplied inventory cannot prove that no remote branch is hidden.
 
+## Issuer gaps
+
+A mixed closure contains records from more than one issuer.
+The stored range index charges one unit per mixed closure and two units per range in those closures.
+If any mixed closure exists, it also charges two units per issuer block.
+The index counts shared caches once. Local closures add no charge.
+A failed graph build stops before the index scans the ranges.
+
+A merge scope contains the records that can contribute to one priced union.
+A test compares both kinds of scope index with direct membership at every issuer gap.
+Let H count the scope memberships, U count the distinct stored ranges, and W sum the ranges over every membership.
+If W is at most 2(H + U), the index scans the ranges of each scope and stores sorted marks.
+Otherwise it reads each distinct range list once to find candidate gaps.
+If at least one candidate gap exists, it reads each distinct range list twice more to record which ranges end or start at each candidate gap.
+The first query at a candidate gap reads the scope lists of those ranges and saves its answer. Later queries at that gap read no lists.
+A query at another gap, or on an empty index, reads no lists.
+The build and the gap tests are input handling. They take no units from the work budget or the eligibility allowance.
+
+The signed tests compare fresh evaluation, live append, and both restored appends for these merges: carry, native status, historical witness, command authority, authorized claims, and import status periods.
+They use the default budget, the exact fresh cost, one unit below it, and one unit above it.
+All paths refuse below the cost and agree on results, work, and ancestry bytes at the cost or above it.
+The check records the IDs of each `maxima` call that names at least three distinct stored records.
+Each carry closure adds at most one set: its present heads without the last present occurrence, kept if at least two distinct heads remain.
+Each recorded union must stay in one issuer block or lie in one collected scope.
+The signed merge tests and the append comparisons that use `fresh_checked` test recorded unions when the reference graph exists and its resource flag is clear.
+
+Two tests add one transfer and its acceptance to many root judgments from distinct keys.
+With 30,000 judgments, the next root judgment stays incremental at the default budget.
+With 2,000 judgments and an explicit limit equal to the fresh cost, the live append and both restored appends stay incremental.
+
 ## Wide predecessor lists
 
 A native release probe used one signed selected view and 600,000 synthetic `identity.merge` records from a single other issuer.

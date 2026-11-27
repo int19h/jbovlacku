@@ -55,8 +55,9 @@ pub struct EvaluationOptions {
     pub selected_view: String,
     pub import_selections: BTreeMap<String, Vec<String>>,
     /// Shared, so that cloning options or a state copies one pointer.
-    #[serde(deserialize_with = "Option::deserialize")]
+    #[serde(default)]
     pub overlay: Option<std::rc::Rc<Value>>,
+    #[serde(default)]
     pub limits: Limits,
 }
 /// The default budget before selections: `base` plus the record and
@@ -69,19 +70,6 @@ pub(crate) fn default_input_budget(base: usize, records: usize, predecessors: us
 /// The number of `previous` IDs over all records, for the default budget.
 pub(crate) fn predecessor_edges(nodes: &BTreeMap<String, graph::Node>) -> usize {
     nodes.values().map(|node| node.previous.len()).sum()
-}
-impl EvaluationOptions {
-    pub(crate) fn traversal_budget_for_nodes(
-        &self,
-        nodes: &BTreeMap<String, graph::Node>,
-    ) -> usize {
-        let resolved = policy::resolve_referenced_selections(self, nodes);
-        self.limits.traversal_budget_with_selections(
-            nodes.len(),
-            predecessor_edges(nodes),
-            resolved.allowance,
-        )
-    }
 }
 /// An opaque projection held only in the trusted host's private storage.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -263,11 +251,9 @@ pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
 pub const DEFAULT_TRAVERSAL_PER_PREDECESSOR: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Limits {
-    #[serde(deserialize_with = "Option::deserialize")]
     pub events: Option<usize>,
-    #[serde(deserialize_with = "Option::deserialize")]
     pub traversal: Option<usize>,
     pub claim_depth: usize,
 }
@@ -1447,6 +1433,70 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
         };
     }
 }
+enum RegisterKind {
+    Judgment,
+    Trust,
+    Profile,
+    Report,
+    Bridge,
+    Account,
+    Observation,
+}
+impl RegisterKind {
+    fn for_action(kind: &str) -> Option<Self> {
+        match kind {
+            "judgment.set" => Some(Self::Judgment),
+            "trust.set" => Some(Self::Trust),
+            "identity.profile" => Some(Self::Profile),
+            "report.set" => Some(Self::Report),
+            "bridge.set" => Some(Self::Bridge),
+            "account.set" => Some(Self::Account),
+            "account.observe" => Some(Self::Observation),
+            _ => None,
+        }
+    }
+
+    fn key(
+        self,
+        n: &graph::Node,
+        actor: &str,
+        resolve_subject: impl FnOnce(&str) -> String,
+    ) -> String {
+        let action = n.action.view();
+        match self {
+            Self::Judgment => format!(
+                "{actor}|judgment|{}",
+                action.index("target").as_str().unwrap_or_default()
+            ),
+            Self::Trust => format!(
+                "{actor}|trust|{}|{}",
+                resolve_subject(action.index("subject").as_str().unwrap_or_default()),
+                action.index("scope")
+            ),
+            Self::Profile => format!("{actor}|profile"),
+            Self::Report => format!(
+                "{actor}|report|{}|{}",
+                action.index("subject"),
+                action.index("category")
+            ),
+            Self::Bridge => format!(
+                "{actor}|bridge|{}|{}",
+                action.index("origin"),
+                action.index("source_definition")
+            ),
+            Self::Account => format!(
+                "{actor}|account|{}|{}",
+                action.index("origin"),
+                action.index("account")
+            ),
+            Self::Observation => format!(
+                "{actor}|observe|{}|{}",
+                action.index("origin"),
+                action.index("account")
+            ),
+        }
+    }
+}
 fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, n) in graph.nodes.as_ref() {
@@ -1467,49 +1517,10 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             continue;
         }
         let actor = graph.actor(&n.issuer);
-        let key = match n.kind.as_str() {
-            "judgment.set" => format!(
-                "judgment|{}",
-                n.action.view().index("target").as_str().unwrap_or_default()
-            ),
-            "trust.set" => format!(
-                "trust|{}|{}",
-                graph.actor(
-                    n.action
-                        .view()
-                        .index("subject")
-                        .as_str()
-                        .unwrap_or_default()
-                ),
-                n.action.view().index("scope")
-            ),
-            "identity.profile" => "profile".into(),
-            "report.set" => format!(
-                "report|{}|{}",
-                n.action.view().index("subject"),
-                n.action.view().index("category")
-            ),
-            "bridge.set" => format!(
-                "bridge|{}|{}",
-                n.action.view().index("origin"),
-                n.action.view().index("source_definition")
-            ),
-            "account.set" => format!(
-                "account|{}|{}",
-                n.action.view().index("origin"),
-                n.action.view().index("account")
-            ),
-            "account.observe" => format!(
-                "observe|{}|{}",
-                n.action.view().index("origin"),
-                n.action.view().index("account")
-            ),
-            _ => continue,
-        };
-        groups
-            .entry(format!("{actor}|{key}"))
-            .or_default()
-            .push(id.clone());
+        if let Some(kind) = RegisterKind::for_action(&n.kind) {
+            let key = kind.key(n, &actor, |subject| graph.actor(subject));
+            groups.entry(key).or_default().push(id.clone());
+        }
     }
     let mut scope_arena = None;
     for (key, ids) in groups {

@@ -379,7 +379,10 @@ The first admission after a restart needs no retained envelope reads.
 An extraction format or body-validation change requires another projection of existing data.
 Compact extraction version 8 and semantic extraction version 5 also admit the signed float calculation profile.
 They retain the current acute-accent word identity and body rules.
-Evaluation checkpoint version 2 rejects state derived under the earlier profile schema.
+Restore requires the current checkpoint format for the saved state.
+The full checkpoint tag is `jvc-evaluation-checkpoint-v13`. The results checkpoint tag is `jvc-evaluation-results-v14`.
+Both restore paths derive the layout guard from records before they admit an append.
+The evaluator defines the full and results format versions in [incremental.rs](../crates/jvc-state/src/incremental.rs).
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
@@ -429,8 +432,15 @@ An unavailable restored base also constructs ancestry once.
 The rebuilt evaluation and work budget match full evaluation. Diagnostic statistics omit discarded incremental work.
 An unavailable base reports `base_unavailable`.
 
-Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor universe.
-The evaluator retains the full logical work charge. Uncertain work at an ancestor-width boundary forces a rebuild.
+Forks share immutable ancestor payloads. A local append charges any copies it makes of shared structures.
+Earlier copy charges stay in the work total until a full rebuild.
+After 64 records have used the fast path, the next eligible record triggers a rebuild and reports `ancestry_rebase`.
+This rebuild incorporates the new IDs into the ancestor layout.
+It reports `layout_split` if the parents leave out any of the issuer history.
+It also reports `layout_split` if the insertion splits a stored range or separates adjacent ranges in a priced union.
+The same guard covers status, carry, register, and account evidence merges.
+The guard is input handling. It takes no units from the work budget or from the append eligibility allowance.
+A rebuild uses the full work budget to decide availability.
 
 Judgment updates can return a patch of at most 1 MiB for the exact parent session.
 The facade applies that patch to immutable result maps. Other changes return the full result.
