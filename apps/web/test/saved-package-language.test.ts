@@ -823,7 +823,7 @@ test("Meaning nearby keeps overlong queries local when no local package is usabl
 });
 
 for (const kind of ["dates", "selmaho"] as const)
-  test(`fresh-read structural reuse compares a shared ${kind} object once across 128 rows within a 10,000-unit budget`, async ({
+  test(`fresh-read structural reuse accepts a shared ${kind} object across 128 rows at default budget and refuses at 10,000 units`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -879,29 +879,20 @@ for (const kind of ["dates", "selmaho"] as const)
         const fresh = await new LocalStore(db).get("packages", "en");
         const left = pick(first.entries[0]);
         const right = pick(fresh.entries[0]);
-        let calls = 0;
-        const nativeOwnKeys = Reflect.ownKeys;
-        Reflect.ownKeys = function (target: object) {
-          if (target === left || target === right) calls++;
-          return nativeOwnKeys(target);
-        };
-        let freshPrepared: boolean;
-        try {
-          freshPrepared = (await searchPackage(fresh, "en", [])).prepared;
-        } finally {
-          Reflect.ownKeys = nativeOwnKeys;
-        }
+        const freshPrepared = (await searchPackage(fresh, "en", [])).prepared;
 
         const again = await new LocalStore(db).get("packages", "en");
-        const boundedPrepared = (
-          await searchPackage(again, "en", [], { workLimit: 10_000 })
-        ).prepared;
+        let tightError = "";
+        try {
+          await searchPackage(again, "en", [], { workLimit: 10_000 });
+        } catch (err: any) {
+          tightError = `${err.constructor.name}:${err.phase ?? ""}`;
+        }
 
         return {
           coldPrepared,
           freshPrepared,
-          boundedPrepared,
-          calls,
+          tightError,
           aliasedFirst: pick(first.entries[n - 1]) === left,
           aliasedFresh: pick(fresh.entries[n - 1]) === right,
           distinct: left !== right,
@@ -914,8 +905,7 @@ for (const kind of ["dates", "selmaho"] as const)
     expect(result).toEqual({
       coldPrepared: true,
       freshPrepared: false,
-      boundedPrepared: false,
-      calls: 2,
+      tightError: "SearchBudgetError:prepare",
       aliasedFirst: true,
       aliasedFresh: true,
       distinct: true,
@@ -923,7 +913,7 @@ for (const kind of ["dates", "selmaho"] as const)
   });
 
 for (const kind of ["dates", "selmaho"] as const)
-  test(`conflicting ${kind} sharing across 8, 16, and 32 squares falls back to cold preparation in linear work and passes the 19,200-unit search`, async ({
+  test(`equal-content ${kind} sharing across 8, 16, and 32 squares reuses warm preparation at default budget and refuses below per-reference cost`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -932,10 +922,6 @@ for (const kind of ["dates", "selmaho"] as const)
       const { searchPackage } = await import(
         String("/src/data/package-search.ts")
       );
-      const pick = (entry: any) =>
-        kind === "dates"
-          ? entry.attribution.dates
-          : entry.classification.selmaho;
       const out = [];
       for (const k of [8, 16, 32]) {
         const db = `cross-sharing-${kind}-${k}-${Date.now()}`;
@@ -1003,33 +989,17 @@ for (const kind of ["dates", "selmaho"] as const)
           rawDb.close();
 
           const fresh = await new LocalStore(db).get("packages", "en");
-          const watched = new Set([
-            ...first.entries.map(pick),
-            ...fresh.entries.map(pick),
-          ]);
-          const nativeOwnKeys = Reflect.ownKeys;
-          let calls = 0;
-          let keys = 0;
-          let freshPrepared: boolean;
-          Reflect.ownKeys = function (target: object) {
-            const list = nativeOwnKeys(target);
-            if (watched.has(target)) {
-              calls++;
-              keys += list.length;
-            }
-            return list;
-          };
-          try {
-            freshPrepared = (await searchPackage(fresh, "en", [])).prepared;
-          } finally {
-            Reflect.ownKeys = nativeOwnKeys;
-          }
+          const freshPrepared = (await searchPackage(fresh, "en", [])).prepared;
 
           const again = await new LocalStore(db).get("packages", "en");
-          const boundedPrepared = (
-            await searchPackage(again, "en", [], { workLimit: 75 * k * k })
-          ).prepared;
-          out.push({ k, coldPrepared, freshPrepared, calls, keys, boundedPrepared });
+          const tightLimit = k === 8 ? 1_000 : k === 16 ? 10_000 : 75 * k * k;
+          let tightError = "";
+          try {
+            await searchPackage(again, "en", [], { workLimit: tightLimit });
+          } catch (err: any) {
+            tightError = `${err.constructor.name}:${err.phase ?? ""}`;
+          }
+          out.push({ k, coldPrepared, freshPrepared, tightError });
         } finally {
           indexedDB.deleteDatabase(db);
         }
@@ -1039,14 +1009,8 @@ for (const kind of ["dates", "selmaho"] as const)
 
     for (const row of results) {
       expect(row.coldPrepared).toBe(true);
-      expect(row.boundedPrepared).toBe(false);
-      // Side 8 fits inside the 2x distinct-size cap and reuses as equal content;
-      // sides 16 and 32 hit the 2x cap and fall back to cold preparation, then
-      // the 75 * k * k (19,200 / 76,800) search succeeds cleanly.
-      expect(row.freshPrepared).toBe(row.k > 8);
-      // keys counts both copies, staying O(k^2) (well below uncapped 262,144 at k=32).
-      expect(row.keys).toBeLessThan(2 * 75 * row.k * row.k);
-      if (row.k === 32) expect(row.keys).toBeLessThan(150_000);
+      expect(row.freshPrepared).toBe(false);
+      expect(row.tightError).toBe("SearchBudgetError:prepare");
     }
   });
 
@@ -1207,4 +1171,209 @@ test("equal content with changed sharing reuses warm index, and four-depth named
   }
   expect(result.nestedCold).toBe(true);
   expect(result.nestedFallbackPrepared).toBe(true);
+});
+
+test("unmodified shared-collection clones keep warm reuse, and long-string crossed squares follow the per-reference cold-path budget", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const makeRow = (i: number, overrides: Record<string, unknown> = {}) => ({
+      event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo" as const, spelling: "cukta" },
+      language: "en",
+      glosses: [] as any[],
+      plain_text: "book",
+      classification: { kind: "gismu" as const, selmaho: [] as string[] },
+      body: null as string | null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [] as string[],
+      attribution: {
+        source: "fixture",
+        author: null,
+        account: null as { origin: string; account: number } | null,
+        dates: {} as Record<string, string>,
+      },
+      ...overrides,
+    });
+    const wrap = (entries: ReturnType<typeof makeRow>[]) => ({
+      version: 2 as const,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries,
+    });
+    const rawPut = async (dbName: string, value: unknown) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open(dbName);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction("packages", "readwrite");
+          tx.objectStore("packages").put(value, "en");
+          tx.oncomplete = () => resolve();
+          tx.onabort = () => reject(tx.error);
+        });
+      } finally {
+        db.close();
+      }
+    };
+
+    const sharedGlosses20 = Array.from({ length: 20 }, (_, j) => ({
+      language: "en",
+      text: `book${j}`,
+      sense: null,
+    }));
+    const sharedLongDate = { day: "x".repeat(6400) };
+    const sharedSelmaho22 = Array.from({ length: 22 }, () => "A".repeat(65));
+    const sharedRafsi22 = Array.from(
+      { length: 22 },
+      (_, j) => "a".repeat(63) + String(j).padStart(2, "0"),
+    );
+    const sharedDates23 = Object.fromEntries(
+      Array.from({ length: 23 }, (_, j) => [`k${j}`, "1"]),
+    );
+    const view = "jve1:" + "9".repeat(64);
+    const m1Cases = [
+      ["shared-glosses-20", wrap(Array.from({ length: 128 }, (_, i) => makeRow(i, { glosses: sharedGlosses20 })))],
+      ["shared-long-date", wrap(Array.from({ length: 128 }, (_, i) => makeRow(i, { attribution: { source: "fixture", author: null, account: null, dates: sharedLongDate } })))],
+      ["shared-selmaho-22", wrap(Array.from({ length: 128 }, (_, i) => makeRow(i, { classification: { kind: "cmavo", selmaho: sharedSelmaho22 } })))],
+      ["shared-rafsi-22", wrap(Array.from({ length: 128 }, (_, i) => makeRow(i, { rafsi: sharedRafsi22 })))],
+      ["shared-dates-23", wrap(Array.from({ length: 128 }, (_, i) => makeRow(i, { body: "sha256:" + "c".repeat(64), rafsi_complete: true, search_status: { view, status: "active" }, attribution: { source: "fixture", author: null, account: { origin: "x", account: 1 }, dates: sharedDates23 } })))],
+    ] as const;
+
+    const m1Results: Array<{ label: string; cold: boolean; warm: boolean; hits: number }> = [];
+    for (const [label, sample] of m1Cases) {
+      const db = `m1-${label}-${Date.now()}`;
+      try {
+        const store = new LocalStore(db);
+        await store.put("packages", "en", sample);
+        const first = await store.get("packages", "en");
+        const cold = (await searchPackage(first, "en", ["cukta"])).prepared;
+        const fresh = await new LocalStore(db).get("packages", "en");
+        const warm = await searchPackage(fresh, "en", ["cukta"]);
+        m1Results.push({
+          label,
+          cold,
+          warm: warm.prepared,
+          hits: warm.hits[0]?.length ?? 0,
+        });
+      } finally {
+        indexedDB.deleteDatabase(db);
+      }
+    }
+
+    // Equal-content k=32 crossed square of 4x2048-char selmaho arrays.
+    // Reuses warm index under default budget; refuses with SearchBudgetError
+    // below per-reference comparison cost (100,000 < 139,267).
+    const e1aDb = `e1a-${Date.now()}`;
+    let e1aWarmPrepared = true;
+    let e1aLowLimitError = "";
+    try {
+      const k = 32;
+      const makeA = (byColumn: boolean) => {
+        const shared = Array.from({ length: k }, () =>
+          Array.from({ length: 4 }, () => "x".repeat(64 * k)),
+        );
+        return wrap(
+          Array.from({ length: k * k }, (_, i) =>
+            makeRow(i, {
+              classification: {
+                kind: "gismu",
+                selmaho: shared[byColumn ? i % k : Math.floor(i / k)],
+              },
+            }),
+          ),
+        );
+      };
+      const store = new LocalStore(e1aDb);
+      await store.put("packages", "en", makeA(false));
+      const first = await store.get("packages", "en");
+      await searchPackage(first, "en", []);
+      await rawPut(e1aDb, makeA(true));
+      const fresh = await new LocalStore(e1aDb).get("packages", "en");
+      e1aWarmPrepared = (await searchPackage(fresh, "en", [])).prepared;
+      const fresh2 = await new LocalStore(e1aDb).get("packages", "en");
+      try {
+        await searchPackage(fresh2, "en", [], { workLimit: 100_000 });
+      } catch (err: any) {
+        e1aLowLimitError = `${err.constructor.name}:${err.phase ?? ""}`;
+      }
+    } finally {
+      indexedDB.deleteDatabase(e1aDb);
+    }
+
+    // Crossed k=16 square of 4x4096-char selmaho arrays differing only in row
+    // 255. Comparison (67,587) + cold path (203,264) = 270,851.
+    const e1bDb = `e1b-${Date.now()}`;
+    const e1bExactLimit = 270_851;
+    let e1bPassPrepared = false;
+    let e1bBelowError = "";
+    try {
+      const k = 16;
+      const makeB = (byColumn: boolean, diffLast: boolean) => {
+        const shared = Array.from({ length: k }, () =>
+          Array.from({ length: 4 }, () => "x".repeat(4096)),
+        );
+        return wrap(
+          Array.from({ length: k * k }, (_, i) =>
+            makeRow(i, {
+              plain_text: diffLast && i === k * k - 1 ? "other" : "book",
+              classification: {
+                kind: "gismu",
+                selmaho: shared[byColumn ? i % k : Math.floor(i / k)],
+              },
+            }),
+          ),
+        );
+      };
+      const store = new LocalStore(e1bDb);
+      await store.put("packages", "en", makeB(false, false));
+      const first = await store.get("packages", "en");
+      await searchPackage(first, "en", []);
+      await rawPut(e1bDb, makeB(true, true));
+      // Fail one unit below the exact comparison + cold-path total.
+      const freshFail = await new LocalStore(e1bDb).get("packages", "en");
+      try {
+        await searchPackage(freshFail, "en", [], {
+          workLimit: e1bExactLimit - 1,
+        });
+      } catch (err: any) {
+        e1bBelowError = `${err.constructor.name}:${err.phase ?? ""}`;
+      }
+      // Succeed at the exact comparison + cold-path total.
+      const freshOk = await new LocalStore(e1bDb).get("packages", "en");
+      e1bPassPrepared = (
+        await searchPackage(freshOk, "en", [], { workLimit: e1bExactLimit })
+      ).prepared;
+    } finally {
+      indexedDB.deleteDatabase(e1bDb);
+    }
+
+    return {
+      m1Results,
+      e1aWarmPrepared,
+      e1aLowLimitError,
+      e1bPassPrepared,
+      e1bBelowError,
+    };
+  });
+
+  for (const item of result.m1Results) {
+    expect(item, item.label).toEqual({
+      label: item.label,
+      cold: true,
+      warm: false,
+      hits: 1,
+    });
+  }
+  expect(result.e1aWarmPrepared).toBe(false);
+  expect(result.e1aLowLimitError).toBe("SearchBudgetError:prepare");
+  expect(result.e1bPassPrepared).toBe(true);
+  expect(result.e1bBelowError).toBe("SearchBudgetError:prepare");
 });

@@ -638,7 +638,7 @@ test("samePackageStructure compares own array property values, empty-array own p
       },
     }),
   ]);
-  assert.equal(samePackageStructure(nullProtoDates, baseDates, budget()), true);
+  assert.equal(samePackageStructure(nullProtoDates, baseDates, budget()), false);
   for (const badDates of [
     new Date(0),
     new Map([["created", 123]]),
@@ -892,11 +892,11 @@ test("searchPackage does not scan unrelated queued transfers during lookup or cl
   }
 });
 
-test("samePackageStructure compares shared records and shared arrays once across rows", async () => {
+test("samePackageStructure accepts shared records and shared arrays at default budget and charges per reference", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
   );
-  const { SearchRequestBudget, searchMetrics } = await import(
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } = await import(
     "../../../../packages/search/src/index.ts"
   );
   const n = 128;
@@ -928,31 +928,23 @@ test("samePackageStructure compares shared records and shared arrays once across
       ),
     ) as never;
     const copy = structuredClone(base);
-    const leftShared =
-      kind === "dates"
-        ? (base as any).entries[0].attribution.dates
-        : (base as any).entries[0].classification.selmaho;
-    const rightShared =
-      kind === "dates"
-        ? (copy as any).entries[0].attribution.dates
-        : (copy as any).entries[0].classification.selmaho;
-    assert.notEqual(leftShared, rightShared);
-    let calls = 0;
-    const nativeOwnKeys = Reflect.ownKeys;
-    Reflect.ownKeys = function (target: object) {
-      if (target === leftShared || target === rightShared) calls++;
-      return nativeOwnKeys(target);
-    };
-    try {
-      const budget = new SearchRequestBudget(searchMetrics(), {
-        workLimit: 10_000,
-        deadlineMs: Infinity,
-      });
-      assert.equal(samePackageStructure(copy, base, budget), true);
-    } finally {
-      Reflect.ownKeys = nativeOwnKeys;
-    }
-    assert.equal(calls, 2);
+    assert.equal(
+      samePackageStructure(copy, base, new SearchRequestBudget(searchMetrics())),
+      true,
+    );
+    assert.throws(
+      () =>
+        samePackageStructure(
+          copy,
+          base,
+          new SearchRequestBudget(searchMetrics(), {
+            workLimit: 10_000,
+            deadlineMs: Infinity,
+          }),
+        ),
+      (err: unknown) =>
+        err instanceof SearchBudgetError && err.phase === "prepare",
+    );
   }
 });
 
@@ -1001,14 +993,13 @@ test("createPackageWordIndex checks a shared selmaho list once across rows witho
   );
 });
 
-test("samePackageStructure caps comparison work across square sizes 8, 16, and 32 while accepting equal content within the cap", async () => {
+test("samePackageStructure accepts equal-content squares 8, 16, and 32 at default budget, refuses tight limits, and caps deep DAGs", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
   );
-  const { SearchRequestBudget, searchMetrics } = await import(
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } = await import(
     "../../../../packages/search/src/index.ts"
   );
-  const nativeOwnKeys = Reflect.ownKeys;
 
   for (const kind of ["dates", "selmaho"] as const) {
     for (const k of [8, 16, 32]) {
@@ -1047,54 +1038,46 @@ test("samePackageStructure caps comparison work across square sizes 8, 16, and 3
           }),
         );
       };
-      const pick = (entry: any) =>
-        kind === "dates"
-          ? entry.attribution.dates
-          : entry.classification.selmaho;
       const byRow = make(false) as never;
       const byColumn = make(true);
-      const watched = new Set([
-        ...(byRow as any).entries.map(pick),
-        ...(byColumn as any).entries.map(pick),
-      ]);
-      let calls = 0;
-      let keys = 0;
-      Reflect.ownKeys = function (target: object) {
-        const list = nativeOwnKeys(target);
-        if (watched.has(target)) {
-          calls++;
-          keys += list.length;
-        }
-        return list;
-      };
-      let equal: boolean;
-      const budget = new SearchRequestBudget(searchMetrics(), {
-        workLimit: 75 * k * k,
-        deadlineMs: Infinity,
-      });
-      try {
-        equal = samePackageStructure(byColumn, byRow, budget);
-      } finally {
-        Reflect.ownKeys = nativeOwnKeys;
+      const defaultBudget = new SearchRequestBudget(searchMetrics());
+      assert.equal(
+        samePackageStructure(byColumn, byRow, defaultBudget),
+        true,
+      );
+      const spent = defaultBudget.snapshot().spent;
+      assert.throws(
+        () =>
+          samePackageStructure(
+            byColumn,
+            byRow,
+            new SearchRequestBudget(searchMetrics(), {
+              workLimit: spent - 1,
+              deadlineMs: Infinity,
+            }),
+          ),
+        (err: unknown) =>
+          err instanceof SearchBudgetError && err.phase === "prepare",
+      );
+      if (k === 32) {
+        assert.throws(
+          () =>
+            samePackageStructure(
+              byColumn,
+              byRow,
+              new SearchRequestBudget(searchMetrics(), {
+                workLimit: 75 * k * k,
+                deadlineMs: Infinity,
+              }),
+            ),
+          (err: unknown) =>
+            err instanceof SearchBudgetError && err.phase === "prepare",
+        );
       }
-      if (k === 8) {
-        // Side 8 fits inside the 2x distinct-size cap, so equal content matches.
-        assert.equal(equal, true);
-      } else {
-        // Larger crossed squares hit the 2x distinct-size cap and decline reuse
-        // cleanly without exhausting the 75 * k * k budget.
-        assert.equal(equal, false);
-        assert.ok(budget.snapshot().spent < 75 * k * k);
-      }
-      assert.ok(budget.snapshot().spent < 75 * k * k);
-      // keys counts Reflect.ownKeys on both left and right, so it stays bounded
-      // by twice the comparison work cap (O(k^2), well below the uncapped O(k^3)).
-      assert.ok(keys <= 2 * budget.snapshot().spent + 2 * (4 * k + 1));
-      if (k === 32) assert.ok(keys < 150_000);
     }
   }
 
-  // Deep DAG of small 2-key objects stops within the 2x distinct-size cap
+  // Deep DAG of small 2-key objects stops within the per-row cap
   // without exponential blowup.
   let leafA: Record<string, unknown> = { a: "x", b: "y" };
   let leafB: Record<string, unknown> = { a: "x", b: "y" };
@@ -1214,7 +1197,7 @@ test("samePackageStructure treats equal content with different sharing as equal 
     );
   }
 
-  // Four-depth amplification graph must stop at the 2x distinct-size cap and
+  // Four-depth amplification graph must stop at the per-row cap and
   // decline reuse instead of spending 123,918 units.
   const leaf = fields(14);
   const small = Object.fromEntries(
@@ -1238,4 +1221,105 @@ test("samePackageStructure treats equal content with different sharing as equal 
     budget.snapshot().spent <= 2_000,
     `expected cap stop <= 2000 units, spent ${budget.snapshot().spent}`,
   );
+});
+
+test("samePackageStructure requires exact container prototypes and accepts unmodified shared-collection clones", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const budget = () => new SearchRequestBudget(searchMetrics());
+
+  // Mismatched null vs Object.prototype, altered array prototypes, and
+  // self-identical non-plain roots must all compare as not equal.
+  const base = pkg([v2Row({ rafsi: ["cuk"] })]) as never;
+  const rootNull = Object.assign(Object.create(null), pkg([v2Row({ rafsi: ["cuk"] })]));
+  const rowNull = pkg([Object.assign(Object.create(null), v2Row({ rafsi: ["cuk"] }))]);
+  const wordNull = pkg([
+    v2Row({
+      rafsi: ["cuk"],
+      word: Object.assign(Object.create(null), {
+        language: "jbo",
+        spelling: "cukta",
+      }),
+    }),
+  ]);
+  const nullProtoArr = pkg([
+    v2Row({ rafsi: Object.setPrototypeOf(["cuk"], null) }),
+  ]);
+  class SubArray extends Array {}
+  const subArr = pkg([v2Row({ rafsi: SubArray.from(["cuk"]) })]);
+  const dateRoot = Object.assign(new Date(), pkg([v2Row({ rafsi: ["cuk"] })]));
+  assert.equal(samePackageStructure(rootNull, base, budget()), false);
+  assert.equal(samePackageStructure(rowNull, base, budget()), false);
+  assert.equal(samePackageStructure(wordNull, base, budget()), false);
+  assert.equal(samePackageStructure(nullProtoArr, base, budget()), false);
+  assert.equal(samePackageStructure(subArr, base, budget()), false);
+  assert.equal(samePackageStructure(dateRoot, dateRoot as never, budget()), false);
+
+  // Two null-prototype records on both sides still match.
+  const nullDatesA = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: Object.assign(Object.create(null), { created: "2020" }),
+      },
+    }),
+  ]);
+  const nullDatesB = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: Object.assign(Object.create(null), { created: "2020" }),
+      },
+    }),
+  ]);
+  assert.equal(samePackageStructure(nullDatesA, nullDatesB as never, budget()), true);
+
+  // Unmodified fresh clones of usable packages with shared parts must
+  // compare as equal regardless of sharing size.
+  const makeRow = (i: number, overrides: Record<string, unknown> = {}) =>
+    v2Row({
+      event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+      glosses: [],
+      rafsi: [],
+      classification: { kind: "gismu", selmaho: [] },
+      attribution: { source: "fixture", author: null, account: null, dates: {} },
+      ...overrides,
+    });
+  const sharedGlosses20 = Array.from({ length: 20 }, (_, j) => ({
+    language: "en",
+    text: `book${j}`,
+    sense: null,
+  }));
+  const sharedLongDate = { day: "x".repeat(6400) };
+  const sharedSelmaho22 = Array.from({ length: 22 }, () => "A".repeat(65));
+  const sharedRafsi22 = Array.from(
+    { length: 22 },
+    (_, j) => "a".repeat(63) + String(j).padStart(2, "0"),
+  );
+  const sharedDates23 = Object.fromEntries(
+    Array.from({ length: 23 }, (_, j) => [`k${j}`, "1"]),
+  );
+  const view = "jve1:" + "9".repeat(64);
+  const cases = [
+    ["shared-glosses-20", pkg(Array.from({ length: 128 }, (_, i) => makeRow(i, { glosses: sharedGlosses20 })))],
+    ["shared-long-date", pkg(Array.from({ length: 128 }, (_, i) => makeRow(i, { attribution: { source: "fixture", author: null, account: null, dates: sharedLongDate } })))],
+    ["shared-selmaho-22", pkg(Array.from({ length: 128 }, (_, i) => makeRow(i, { classification: { kind: "cmavo", selmaho: sharedSelmaho22 } })))],
+    ["shared-rafsi-22", pkg(Array.from({ length: 128 }, (_, i) => makeRow(i, { rafsi: sharedRafsi22 })))],
+    ["shared-dates-23", pkg(Array.from({ length: 128 }, (_, i) => makeRow(i, { body: "sha256:" + "c".repeat(64), rafsi_complete: true, search_status: { view, status: "active" }, attribution: { source: "fixture", author: null, account: { origin: "x", account: 1 }, dates: sharedDates23 } })))],
+  ] as const;
+  for (const [label, sample] of cases) {
+    assert.equal(
+      samePackageStructure(structuredClone(sample), sample as never, budget()),
+      true,
+      `${label} fresh clone must compare as equal`,
+    );
+  }
 });
