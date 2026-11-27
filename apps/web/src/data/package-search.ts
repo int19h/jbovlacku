@@ -1,5 +1,11 @@
 import { packageStorageKey } from "./store.ts";
-import { PackageValidationError } from "./saved-package.ts";
+import {
+  fitsComponentSpelling,
+  PackageValidationError,
+  requirePackageListShapes,
+  requireSavedRowLists,
+  savedRowListCache,
+} from "./saved-package.ts";
 export { PackageValidationError };
 import {
   invalidPackage,
@@ -373,15 +379,7 @@ function sameStructuredValue(
   return matched;
 }
 
-/**
- * Content equality between a freshly read package clone and a trusted
- * validated snapshot. Walks both copies per reference with no pair memo,
- * checks exact container prototypes, row order, own array keys, holes, and
- * worker fields, and charges the same per-row units as the cold path. A row
- * whose walk exceeds the cold-path bound returns `false` (declining reuse so
- * the caller takes the cold path) without raising an error.
- */
-export function samePackageStructure(
+function sameValidatedPackageStructure(
   incoming: unknown,
   trusted: CachedPackage,
   budget: SearchRequestBudget,
@@ -524,6 +522,38 @@ export function samePackageStructure(
     }
   }
   return true;
+}
+
+/**
+ * Content equality between a freshly read package clone and a trusted
+ * validated snapshot. List shapes pass the shared unbudgeted
+ * `requirePackageListShapes` check before any budget charge, and the remaining
+ * value comparison walks both copies per reference with exact container
+ * prototypes and charges the same per-row units as the cold path.
+ */
+export function samePackageStructure(
+  incoming: unknown,
+  trusted: CachedPackage,
+  budget: SearchRequestBudget,
+): boolean {
+  if (
+    !incoming ||
+    !trusted ||
+    typeof incoming !== "object" ||
+    typeof trusted !== "object" ||
+    Array.isArray(incoming) ||
+    Array.isArray(trusted)
+  )
+    return false;
+  const rootProtoA = Object.getPrototypeOf(incoming);
+  const rootProtoB = Object.getPrototypeOf(trusted);
+  if (
+    rootProtoA !== rootProtoB ||
+    (rootProtoA !== Object.prototype && rootProtoA !== null)
+  )
+    return false;
+  requirePackageListShapes(incoming);
+  return sameValidatedPackageStructure(incoming, trusted, budget);
 }
 
 function dropSnapshot(current: Client, key: number): void {
@@ -708,25 +738,31 @@ export async function searchPackage(
         }
       }
     }
-    // Fresh clone with the same durable storage revision: reuse only after
-    // content equality against a confirmed retained snapshot (checking most
-    // recently retained snapshots first).
-    if (matchedKey === undefined && storageHint !== undefined) {
-      for (const candidateKey of Array.from(client.retained).reverse()) {
-        const entry = client.snapshots.get(candidateKey);
-        if (
-          entry &&
-          entry.language === language &&
-          entry.storageHint === storageHint &&
-          samePackageStructure(pkg, entry.pkg, clientBudget)
-        ) {
-          matchedKey = candidateKey;
-          resolvedPkg = entry.pkg;
-          client.aliases.set(pkg, { key: candidateKey, language });
-          break;
+    // Fresh clone with the same durable storage revision: validate all outer
+    // and nested list shapes before any budgeted equality or transfer work,
+    // then reuse only after content equality against a confirmed retained
+    // snapshot (checking most recently retained snapshots first).
+    if (matchedKey === undefined) {
+      requirePackageListShapes(pkg);
+      if (storageHint !== undefined) {
+        for (const candidateKey of Array.from(client.retained).reverse()) {
+          const entry = client.snapshots.get(candidateKey);
+          if (
+            entry &&
+            entry.language === language &&
+            entry.storageHint === storageHint &&
+            sameValidatedPackageStructure(pkg, entry.pkg, clientBudget)
+          ) {
+            matchedKey = candidateKey;
+            resolvedPkg = entry.pkg;
+            client.aliases.set(pkg, { key: candidateKey, language });
+            break;
+          }
         }
       }
     }
+  } else {
+    requirePackageListShapes(pkg);
   }
   const key = matchedKey ?? ++packageId;
   const send = (force = false) => {
@@ -815,8 +851,12 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
+          if (force) requirePackageListShapes(resolvedPkg);
+          if (resolvedPkg.entries.length) clientBudget.ensure(1, "prepare");
+          const checkedLists = savedRowListCache();
           for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
+            requireSavedRowLists(entry, clientBudget, true, checkedLists);
             const content = entryContentUnits(entry, clientBudget, "prepare");
             clientBudget.reserve(1 + content, "prepare");
           }
@@ -880,9 +920,13 @@ export function resolvePackageHits(
     rows.map((hit) => {
       budget.reserve(1, "search");
       const selected = pkg.entries[hit.preview];
+      let fittingEntry: PackageEntry | null = null;
       const entries = hit.entries.map((index) => {
         budget.reserve(1, "search");
-        return pkg.entries[index];
+        const entry = pkg.entries[index];
+        if (fittingEntry === null && fitsComponentSpelling(entry.word.spelling))
+          fittingEntry = entry;
+        return entry;
       });
       const definitions = hit.definitions.map((index) => {
         budget.reserve(1, "search");
@@ -894,6 +938,7 @@ export function resolvePackageHits(
         match: hit.match,
         word: selected.word,
         entries,
+        fittingEntry,
         definitions,
         preview: {
           event: selected.event,
@@ -940,9 +985,7 @@ export function summarizeHitEntries(
   return entries.map((entry) => ({
     event: entry.event,
     summary:
-      // filter drops empty array slots, which the worker's checks skip.
       entry.glosses
-        .filter(() => true)
         .map((gloss) => gloss.text)
         .join(", ") ||
       // The first 60 code points occupy at most 120 UTF-16 units, so reading

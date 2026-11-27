@@ -1,3 +1,10 @@
+import {
+  fitsComponentSpelling,
+  fitsSavedComponent,
+  PACKAGE_RAFSI_LIMIT,
+  PackageValidationError,
+  validPackageRafsi,
+} from "../data/saved-package.ts";
 /**
  * Production transitions for headword and builder state.
  * See docs/typed-headword-state.md for fields, events, and invariants.
@@ -20,6 +27,7 @@ import type {
   Compound,
   Formation,
   LexicalKind,
+  PackageEntry,
   PackageEntryV2,
 } from "./types.ts";
 import type { Draft } from "./draft.ts";
@@ -167,22 +175,26 @@ export function selectLujvoSource(
   state: LujvoState,
   index: number,
   source: LujvoComponentState | string,
-) {
+): boolean {
   const row = state.components[index];
   if (typeof source !== "string") {
-    state.components[index] = { ...source, id: row.id, locked: row.locked };
-  } else {
-    const spelling = typedWord(source);
-    Object.assign(row, {
-      spelling,
-      kind: detectWord(spelling).kind,
-      definition: null,
-      definitions: [],
-      claims: [],
-    });
-    if (spelling) delete row.unresolvedSource;
-    else row.unresolvedSource = "Link a source word if you know it.";
+    const next = { ...source, id: row.id, locked: row.locked };
+    if (!fitsSavedComponent(next)) return false;
+    state.components[index] = next;
+    return true;
   }
+  const spelling = typedWord(source);
+  if (spelling && !fitsComponentSpelling(spelling)) return false;
+  Object.assign(row, {
+    spelling,
+    kind: detectWord(spelling).kind,
+    definition: null,
+    definitions: [],
+    claims: [],
+  });
+  if (spelling) delete row.unresolvedSource;
+  else row.unresolvedSource = "Link a source word if you know it.";
+  return true;
 }
 
 /** Record a confirmed gismu choice and keep the previous component inputs. */
@@ -290,20 +302,38 @@ function signedComponent(
   profile: MorphologyProfile,
   zei = false,
 ): LujvoComponentState {
+  const locked =
+    component.rafsi && fitsComponentSpelling(component.rafsi)
+      ? component.rafsi
+      : null;
+  if (!fitsComponentSpelling(component.word.spelling)) {
+    return {
+      id: componentId(),
+      spelling: "",
+      kind: "other",
+      definition: null,
+      definitions: [],
+      claims: [],
+      locked,
+      gloss: "",
+      unresolvedSource: "Link a source word if you know it.",
+    };
+  }
   return {
     id: componentId(),
     spelling: component.word.spelling,
     kind: detectWord(component.word.spelling, profile).kind,
     definition: component.definition,
-    claims: zei
-      ? []
-      : [
-          {
-            rafsi: component.rafsi,
-            pair: rafsiPairId(wordId(component.word), component.rafsi),
-          },
-        ],
-    locked: component.rafsi,
+    claims:
+      zei || !validPackageRafsi(component.rafsi)
+        ? []
+        : [
+            {
+              rafsi: component.rafsi,
+              pair: rafsiPairId(wordId(component.word), component.rafsi),
+            },
+          ],
+    locked,
     gloss: "",
   };
 }
@@ -659,61 +689,192 @@ export function selectLujvoCandidate(
   draft.step = Math.max(draft.step, 4) as Draft["step"];
 }
 
+interface IndexedSourceRow {
+  index: number;
+  entry: CachedPackage["entries"][number];
+}
+
+interface PackageSourceIndex {
+  byPlain: Map<string, IndexedSourceRow[]>;
+  byGismuPrefix: Map<string, Set<string>>;
+  byRafsi: Map<string, Set<string>>;
+}
+
+// Package entry lists are immutable; index stripped headwords, gismu prefixes,
+// and listed rafsi once per list so multi-part reconstruction and re-renders
+// never rescan the package.
+const packageSourceIndexes = new WeakMap<
+  readonly CachedPackage["entries"][number][],
+  PackageSourceIndex
+>();
+
+function sourceIndexFor(
+  entries: readonly CachedPackage["entries"][number][],
+): PackageSourceIndex {
+  let index = packageSourceIndexes.get(entries);
+  if (index) return index;
+  const byPlain = new Map<string, IndexedSourceRow[]>();
+  const byGismuPrefix = new Map<string, Set<string>>();
+  const byRafsi = new Map<string, Set<string>>();
+  const addKey = (map: Map<string, Set<string>>, key: string, plain: string) => {
+    let set = map.get(key);
+    if (!set) {
+      set = new Set();
+      map.set(key, set);
+    }
+    set.add(plain);
+  };
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const plain = stripAcuteAccents(entry.word.spelling);
+    let list = byPlain.get(plain);
+    if (!list) {
+      list = [];
+      byPlain.set(plain, list);
+    }
+    list.push({ index: i, entry });
+    if (entry.classification.kind === "gismu")
+      addKey(byGismuPrefix, plain.slice(0, 4), plain);
+    if ("issuer" in entry) {
+      for (const rafsi of (entry as PackageEntryV2).rafsi)
+        addKey(byRafsi, rafsi, plain);
+    }
+  }
+  index = { byPlain, byGismuPrefix, byRafsi };
+  packageSourceIndexes.set(entries, index);
+  return index;
+}
+
 /** Possible source words remain choices. Dictionary order grants no source authority. */
 export function sourceOptions(
   part: RecoveredPart,
   cached: CachedPackage | null,
   wholeWord = false,
 ) {
-  const words = new Map<string, LujvoComponentState>();
-  for (const entry of cached?.entries ?? []) {
+  const entries = cached?.entries;
+  if (!entries?.length) return [];
+  const index = sourceIndexFor(entries);
+  const matchedPlains = new Set<string>();
+  if (index.byPlain.has(part.text)) matchedPlains.add(part.text);
+  if (!wholeWord) {
+    if (part.text.length === 4) {
+      const prefixes = index.byGismuPrefix.get(part.text);
+      if (prefixes) for (const plain of prefixes) matchedPlains.add(plain);
+    }
+    const rafsiMatches = index.byRafsi.get(part.text);
+    if (rafsiMatches) for (const plain of rafsiMatches) matchedPlains.add(plain);
+  }
+  if (!matchedPlains.size) return [];
+  // Each byPlain bucket is already in ascending package event order. Walk each
+  // matched bucket directly instead of joining and sorting all matching rows on
+  // every call, and group all rows that share a canonical word ID before
+  // enforcing the 128-byte component spelling limit so an over-long alias does
+  // not drop its claims when another alias of the same word fits.
+  interface WordAccumulator {
+    firstIndex: number;
+    lastIndex: number;
+    component: LujvoComponentState;
+    buckets: IndexedSourceRow[][];
+    extraRows?: IndexedSourceRow[];
+  }
+  const addRow = (
+    component: LujvoComponentState,
+    identity: string,
+    entry: PackageEntry,
+  ) => {
     const spelling = entry.word.spelling;
-    const listed =
-      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
-    const plain = stripAcuteAccents(spelling);
-    if (wholeWord && plain !== part.text) continue;
     if (
-      !wholeWord &&
-      plain !== part.text &&
-      !(
-        entry.classification.kind === "gismu" && plain.slice(0, 4) === part.text
-      ) &&
-      !listed.includes(part.text)
-    )
-      continue;
-    const identity = wordId(entry.word);
-    let component = words.get(identity);
-    if (!component) {
-      component = {
-        id: componentId(),
-        spelling,
-        kind: entry.classification.kind,
-        definition: null,
-        definitions: [],
-        gloss: entry.glosses[0]?.text ?? "",
-        locked: part.text,
-        claims: [],
-      };
-      words.set(identity, component);
+      !fitsComponentSpelling(component.spelling) &&
+      fitsComponentSpelling(spelling)
+    ) {
+      component.spelling = spelling;
     }
     component.definitions!.push({
       event: entry.event,
       summary: entry.plain_text,
     });
+    const listed =
+      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
     for (const rafsi of listed)
-      // An empty array slot is no rafsi, as in the worker's checks.
-      if (
-        rafsi !== undefined &&
-        !component.claims.some((claim) => claim.rafsi === rafsi)
-      )
-        component.claims.push({
-          rafsi,
-          pair: rafsiPairId(wordId(entry.word), rafsi),
+      if (!component.claims.some((claim) => claim.rafsi === rafsi)) {
+        if (
+          component.claims.length === PACKAGE_RAFSI_LIMIT ||
+          !validPackageRafsi(rafsi)
+        )
+          throw new PackageValidationError();
+        component.claims.push({ rafsi, pair: rafsiPairId(identity, rafsi) });
+      }
+  };
+  const words = new Map<string, WordAccumulator>();
+  for (const plain of matchedPlains) {
+    const rows = index.byPlain.get(plain);
+    if (!rows) continue;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const entry = row.entry;
+      const identity = wordId(entry.word);
+      const existing = words.get(identity);
+      if (!existing) {
+        const component: LujvoComponentState = {
+          id: componentId(),
+          spelling: entry.word.spelling,
+          kind: entry.classification.kind,
+          definition: null,
+          definitions: [],
+          gloss: entry.glosses[0]?.text ?? "",
+          locked: part.text,
+          claims: [],
+        };
+        addRow(component, identity, entry);
+        words.set(identity, {
+          firstIndex: row.index,
+          lastIndex: row.index,
+          component,
+          buckets: [rows],
         });
+      } else if (!existing.extraRows && row.index > existing.lastIndex) {
+        if (existing.buckets[existing.buckets.length - 1] !== rows)
+          existing.buckets.push(rows);
+        addRow(existing.component, identity, entry);
+        existing.lastIndex = row.index;
+      } else {
+        if (!existing.extraRows) {
+          existing.extraRows = existing.buckets.flatMap((bucket) =>
+            bucket.filter(
+              (candidate) => wordId(candidate.entry.word) === identity,
+            ),
+          );
+        }
+        existing.extraRows.push(row);
+      }
+    }
   }
-  return [...words.values()].sort((a, b) =>
-    a.spelling.localeCompare(b.spelling),
-  );
+  for (const [identity, acc] of words) {
+    if (!acc.extraRows) continue;
+    acc.extraRows.sort((a, b) => a.index - b.index);
+    const first = acc.extraRows[0];
+    const component: LujvoComponentState = {
+      id: acc.component.id,
+      spelling: first.entry.word.spelling,
+      kind: first.entry.classification.kind,
+      definition: null,
+      definitions: [],
+      gloss: first.entry.glosses[0]?.text ?? "",
+      locked: part.text,
+      claims: [],
+    };
+    for (const row of acc.extraRows) addRow(component, identity, row.entry);
+    acc.firstIndex = first.index;
+    acc.component = component;
+  }
+  return [...words.values()]
+    .filter((acc) => fitsSavedComponent(acc.component))
+    .sort(
+      (a, b) =>
+        a.component.spelling.localeCompare(b.component.spelling) ||
+        a.firstIndex - b.firstIndex,
+    )
+    .map((acc) => acc.component);
 }
 
 /** Hydrate exact rafsi and boundaries. A missing source stays explicitly unresolved. */
@@ -751,21 +912,31 @@ export function typedLujvoState(
       const display = displayed?.[index]?.trim().normalize("NFC");
       if (choices.length === 1)
         return display &&
+          fitsComponentSpelling(display) &&
           stripAcuteAccents(display) !== display &&
           stripAcuteAccents(display) === stripAcuteAccents(choices[0].spelling)
           ? { ...choices[0], spelling: display }
           : choices[0];
-      if (zei)
+      const locked = fitsComponentSpelling(part.text) ? part.text : null;
+      if (zei) {
+        const zeiSpelling =
+          display && fitsComponentSpelling(display)
+            ? display
+            : (locked ?? "");
         return {
           id: componentId(),
-          spelling: display ?? part.text,
-          kind: detectWord(part.text, profile).kind,
+          spelling: zeiSpelling,
+          kind: zeiSpelling ? detectWord(part.text, profile).kind : "other",
           definition: null,
           definitions: [],
           gloss: "",
           claims: [],
-          locked: part.text,
+          locked,
+          ...(zeiSpelling
+            ? {}
+            : { unresolvedSource: "Link a source word if you know it." }),
         };
+      }
       return {
         id: componentId(),
         spelling: "",
@@ -773,7 +944,7 @@ export function typedLujvoState(
         definition: null,
         gloss: "",
         claims: [],
-        locked: part.text,
+        locked,
         unresolvedSource: choices.length
           ? "Choose a source word."
           : "Link a source word if you know it.",

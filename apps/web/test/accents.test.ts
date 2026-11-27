@@ -341,10 +341,21 @@ test("restored accented source keeps its exact-definition selector", async ({
     const { interpretDefinition } = await import(corePath);
     const store = new LocalStore();
     const cached = await store.get("packages", "en");
-    cached.entries.sort(
-      (a: any, b: any) =>
-        Number(a.word.spelling === "dján") - Number(b.word.spelling === "dján"),
+    const plainEntry = cached.entries.find(
+      (row: any) => row.word.spelling === "djan",
     );
+    const markedEntry = cached.entries.find(
+      (row: any) => row.word.spelling === "dján",
+    );
+    if (plainEntry && markedEntry && plainEntry.event > markedEntry.event) {
+      [plainEntry.event, markedEntry.event] = [
+        markedEntry.event,
+        plainEntry.event,
+      ];
+      cached.entries.sort((a: any, b: any) =>
+        a.event < b.event ? -1 : a.event > b.event ? 1 : 0,
+      );
+    }
     await store.put("packages", "en", cached);
     const draft = newDraft({
       kind: "lujvo",

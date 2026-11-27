@@ -18,17 +18,21 @@ import {
 import type { CachedPackage } from "../data/search.ts";
 import type { LocalStore } from "../data/store.ts";
 import {
+  isV2,
   PackageValidationError,
   savedPackage,
-  savedRow,
-  savedRowListCache,
-  savedWordId,
+  savedRafsiUnion,
+  requirePackageListShapes,
+  savedRowReader,
+  savedSpellingChecks,
+  savedWordIdBatcher,
 } from "../data/saved-package.ts";
 import {
   languageTag,
   type Compound,
   type Formation,
   type FormationSource,
+  type PackageEntry,
   type RichText,
 } from "./types.ts";
 import { textToRichText } from "./richtext.ts";
@@ -458,8 +462,11 @@ export function savedInventory(saved: SavedPackages): SavedInventory {
 }
 /**
  * The conflict inventory from the local package, which must pass
- * `savedPackage`. Each row is read through `savedRow` and `savedWordId`,
- * so an unusable row raises `PackageValidationError`.
+ * `savedPackage`. All outer and nested list shapes pass
+ * `requirePackageListShapes`, each row passes `savedRowReader`, claims pass
+ * `savedRafsiUnion`, gismu, claim, and incomplete-rafsi rows derive canonical
+ * IDs in core batches through `savedWordIdBatcher`, and remaining rows pass
+ * `savedSpellingChecks`. Any failure raises `PackageValidationError`.
  */
 export function inventoryFromPackage(
   saved: SavedLanguagePackage | null,
@@ -478,29 +485,49 @@ export function inventoryFromPackage(
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
-  const checkedLists = savedRowListCache();
+  requirePackageListShapes(pkg);
+  const readRow = savedRowReader(pkg, language, undefined, true);
+  const countRafsi = savedRafsiUnion();
+  const wordIds = savedWordIdBatcher<{
+    entry: PackageEntry;
+    isGismu: boolean;
+    rafsiList: readonly string[];
+    isIncomplete: boolean;
+  }>(({ entry, isGismu, rafsiList, isIncomplete }, id) => {
+    if (rafsiList.length > 0) countRafsi(id, entry);
+    if (isGismu) gismu.set(id, entry.word.spelling);
+    if (isIncomplete) incomplete.set(id, entry.word.spelling);
+    for (const rafsi of rafsiList) {
+      const pair = rafsiPairId(id, rafsi);
+      claims.set(pair, {
+        rafsi,
+        word: id,
+        spelling: entry.word.spelling,
+        pair,
+      });
+    }
+  });
+  const spellings = savedSpellingChecks();
   for (const row of pkg.entries) {
-    const entry = savedRow(row, pkg.version, language, checkedLists);
-    const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
-    const kind = (entry.classification as { kind?: string } | null)?.kind;
-    if (kind === "gismu") gismu.set(id, entry.word.spelling);
-    if ("rafsi" in entry && Array.isArray(entry.rafsi)) {
-      hasClaims = true;
-      if ((entry as { rafsi_complete?: boolean }).rafsi_complete === false)
-        incomplete.set(id, entry.word.spelling);
-      for (const rafsi of entry.rafsi) {
-        // An empty array slot is no rafsi, as in the worker's checks.
-        if (rafsi === undefined) continue;
-        const pair = rafsiPairId(id, rafsi);
-        claims.set(pair, {
-          rafsi,
-          word: id,
-          spelling: entry.word.spelling,
-          pair,
-        });
-      }
+    const entry = readRow(row);
+    const isGismu = entry.classification.kind === "gismu";
+    const isVersion2 = isV2(entry);
+    const rafsiList = isVersion2 ? entry.rafsi : [];
+    const isIncomplete = isVersion2 && entry.rafsi_complete === false;
+    if (isVersion2) hasClaims = true;
+    if (isGismu || rafsiList.length > 0 || isIncomplete) {
+      wordIds.add(entry.word.spelling, {
+        entry,
+        isGismu,
+        rafsiList,
+        isIncomplete,
+      });
+    } else {
+      spellings.add(entry.word.spelling);
     }
   }
+  wordIds.finish();
+  spellings.finish();
   return {
     snapshot: pkg.snapshot,
     claims: [...claims.values()],

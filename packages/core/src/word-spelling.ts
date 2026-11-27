@@ -9,8 +9,6 @@
  */
 import { OUTSIDE_SAFE_BMP_SPELLING } from "./word-spelling-ranges.ts";
 
-const NON_PRINTABLE_ASCII = /[^ -~]/;
-
 export type WordSpellingStatus = "valid" | "invalid" | "check";
 
 export function wordSpellingStatus(spelling: string): WordSpellingStatus {
@@ -18,7 +16,12 @@ export function wordSpellingStatus(spelling: string): WordSpellingStatus {
   if (!len || len > 256) return "invalid";
   if (spelling.charCodeAt(0) === 32 || spelling.charCodeAt(len - 1) === 32)
     return "invalid";
-  if (!NON_PRINTABLE_ASCII.test(spelling)) return "valid";
+  let nonAscii = 0;
+  for (let i = 0; i < len; i++) {
+    const code = spelling.charCodeAt(i);
+    nonAscii |= (code - 32) | (126 - code);
+  }
+  if (nonAscii >= 0) return "valid";
   if (OUTSIDE_SAFE_BMP_SPELLING.test(spelling)) return "check";
   // Every character in the safe BMP table occupies at most 3 UTF-8 bytes, so
   // up to 85 units always fit within the 256-byte core limit (85 * 3 = 255).

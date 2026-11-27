@@ -1174,14 +1174,12 @@ function hitRow(
           link("notes", `${routes.definition(previewId)}#notes`),
         );
       if (entry.rafsi.length) {
-        // filter drops empty array slots, which the worker's checks skip.
-        rafsiSpan.textContent = entry.rafsi.filter(() => true).join(", ");
+        rafsiSpan.textContent = entry.rafsi.join(", ");
         rafsiSpan.hidden = false;
       }
     } else meta.append(text("Author unavailable in this package"));
     if (entry?.classification.selmaho.length) {
       selmaho.textContent = entry.classification.selmaho
-        .filter(() => true)
         .join(", ");
       selmaho.hidden = false;
     }

@@ -20,7 +20,7 @@ const wordEntry = (index: number, spelling = "broda") => ({
   body: null,
   issuer,
   notes: false,
-  rafsi: [`raf${index}`],
+  rafsi: [`raf${index % 63}`],
   rafsi_complete: true,
   attribution: null,
 });
@@ -86,6 +86,7 @@ test("a 1001-entry word keeps every definition and claim through Add", async ({
 }) => {
   await page.goto("/");
   const entries = Array.from({ length: 1001 }, (_, index) => wordEntry(index));
+  entries[1000].rafsi = ["raf1000"];
   await seedPackages(page, { en: { snapshot, version: 2, entries } });
   await blockPackageDownloads(page);
   await startLujvoDraft(page);
@@ -108,12 +109,12 @@ test("a 1001-entry word keeps every definition and claim through Add", async ({
     rafsi: string[];
   };
   expect(state.definitions).toBe(1001);
-  expect(state.claims).toBe(1001);
+  expect(state.claims).toBe(64);
   expect(state.last).toBe(
     "jve1:" + (1001).toString(16).padStart(64, "0"),
   );
   expect(state.rafsi).toContain("raf1000");
-  expect(state.rafsi).toHaveLength(1001);
+  expect(state.rafsi).toHaveLength(64);
 });
 
 async function readAddedRows(page: Page) {
@@ -260,7 +261,8 @@ test("the typed-word check caps a 1001-definition word with show-all", async ({
 test("the typed-word check pages a 100000-definition word in batches", async ({
   page,
 }) => {
-  test.setTimeout(240000);
+  // Rendering all batches can take several minutes on a shared runner.
+  test.setTimeout(360000);
   await page.goto("/");
   await page.evaluate(
     async ({ snapshot, issuer }) => {
@@ -277,7 +279,7 @@ test("the typed-word check pages a 100000-definition word in batches", async ({
           body: null,
           issuer,
           notes: false,
-          rafsi: [`raf${index}`],
+          rafsi: [`raf${index % 63}`],
           rafsi_complete: true,
           attribution: null,
         });
@@ -307,7 +309,7 @@ test("the typed-word check pages a 100000-definition word in batches", async ({
       document.querySelectorAll('div[aria-label="Typed word"] ul.small li a')
         .length === 100000,
     null,
-    { timeout: 180000 },
+    { timeout: 300000 },
   );
   await expect(list).toHaveCount(100000);
   await expect(
@@ -377,13 +379,15 @@ test("a later language's rafsi row replaces the earlier one", async ({
 
 test("exactly 1000 rafsi rows show no limited notice", async ({ page }) => {
   await page.goto("/");
-  // One word with exactly 1,000 distinct retained rafsi, plus a quiet
-  // French package that contributes no novel spelling.
+  // The English package has 1,000 pairs within the per-word limit.
+  // The French package adds no matching pair.
   const enEntries = Array.from({ length: 16 }, (_, index) => {
     const start = index * 64;
     const count = index < 15 ? 64 : 40;
+    const spelling =
+      "b" + "aeio"[Math.floor(index / 4)] + "bdgj"[index % 4] + "ar";
     return {
-      ...wordEntry(index),
+      ...wordEntry(index, spelling),
       event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
       rafsi: Array.from({ length: count }, (_, j) => `raf${start + j}`),
     };

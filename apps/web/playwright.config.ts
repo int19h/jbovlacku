@@ -40,7 +40,9 @@ export default defineConfig({
     {
       name: "firefox-wizard",
       testMatch:
-        /(?:wizard-explanations|place-numbering|wizard-polish|saved-package-language)\.test\.ts/,
+        /(?:wizard-explanations|place-numbering|wizard-polish|saved-package-language|saved-package-guard)\.test\.ts/,
+      // Chromium covers all saved package guards. Firefox also runs the shape cases.
+      grepInvert: /saved-package-guard\.test\.ts (?!saved shapes )/,
       use: { browserName: "firefox" },
     },
     {

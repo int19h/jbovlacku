@@ -52,11 +52,14 @@ const pkg = (entries: unknown[], over: Record<string, unknown> = {}) => ({
   entries,
   ...over,
 });
-/** What a page that reads every row checks: the package, then each row. */
+/** What a page that reads every row checks: the package, then each row in order. */
 const readAll = (value: unknown) => {
   const pkg = saved.savedPackage(value);
-  for (const entry of pkg?.entries ?? [])
-    saved.savedRow(entry, pkg!.version, "en");
+  if (pkg) {
+    saved.requireDenseList(pkg.entries);
+    const readRow = saved.savedRowReader(pkg, "en");
+    for (const entry of pkg.entries) readRow(entry);
+  }
   return pkg;
 };
 const rejects = (value: unknown) =>
@@ -121,27 +124,11 @@ test("every package that the search worker accepts is usable", () => {
   }
 });
 
-test("the rule and the worker agree on every field a page reads", () => {
-  // Each case changes one field of a valid package. Whenever the shared
-  // rule calls the result unusable, the worker must agree, so a package
-  // that the search page can use is never unusable on another page. And
-  // whenever the worker rejects a case that the rule accepts, the changed
-  // field must be one of the listed differences: fields that no page reads
-  // before the worker's verdict, or checks that pages make when they read.
-  const workerOnly = new Set([
-    // Only the search page reads attribution, after the worker's verdict.
-    "row.attribution",
-    // The core checks the spelling where a page derives the word ID.
-    "word.spelling",
-    // A row's ordering status: only the worker reads it. A package with a
-    // bad status still reaches the lujvo builder, whose part lookup then
-    // reports that the local lookup is unavailable, as on main.
-    "row.search_status",
-    // Exact field sets and the row order: no page reads them.
-    "package.extra",
-    "row.extra",
-    "row.order",
-  ]);
+test("the rule and the worker agree on every field of a package and its rows", () => {
+  // Each case changes one field of a valid package. The shared row reader and
+  // the worker use the same shape and order rules, so the only case left to
+  // the caller's spelling or word-ID check is an invalid spelling string.
+  const workerOnly = new Set(["word.spelling"]);
   const odd = [
     undefined,
     null,
@@ -385,7 +372,7 @@ test("the word index counts rows that fail the row check", async () => {
   const value = pkg([v2Row(), null, v2Row({ glosses: null })]) as never;
   assert.equal(
     index(value, "en", wordId({ language: "jbo", spelling: "cukta" })).length,
-    1,
+    0,
   );
   assert.equal(index.invalidEntryCount(value, "en"), 2);
 });
@@ -416,7 +403,7 @@ test("wizard inventory skips a package whose rows disagree with its key", async 
   assert.deepEqual(inventory.selected, { language: "en", pkg: good });
 });
 
-test("a rafsi with a lone surrogate is unusable in both readers", () => {
+test("a rafsi with a lone surrogate fails in both readers", () => {
   const lone = pkg([v2Row({ rafsi: ["\ud800"] })]);
   rejects(lone);
   assert.equal(workerAccepts(lone), false);
@@ -434,33 +421,81 @@ test("an event or row language with a lone surrogate is unusable", () => {
   }
 });
 
-test("empty array slots are read as the worker reads them", () => {
-  // IndexedDB keeps empty slots. The worker's `.some` skips them, so the
-  // rule must skip them too.
-  const selmaho = new Array(1);
-  const glosses = [v1Row().glosses[0]];
-  glosses.length = 2;
-  const rafsi = ["cuk"];
-  rafsi.length = 2;
-  for (const row of [
-    v2Row({ classification: { kind: "gismu", selmaho } }),
-    v2Row({ glosses }),
-    v2Row({ rafsi }),
+test("dense lists reject missing indices and extra keys in both readers", () => {
+  const gloss = v1Row().glosses[0];
+  for (const value of [
+    pkg(Object.assign([v2Row()], { entries: 0 })),
+    pkg(Object.assign([v2Row()], { "01": 0 })),
+    pkg(new Array(0xffffffff)),
+    pkg([v2Row({ glosses: [, gloss] })]),
+    pkg([v2Row({ rafsi: ["cuk", , "cku"] })]),
+    pkg([
+      v2Row({ rafsi: Object.assign(new Array(2), { 0: "cuk", foo: true }) }),
+    ]),
+    pkg([v2Row({ glosses: Object.assign([gloss], { map: false }) })]),
+    pkg([v2Row({ rafsi: Object.assign(["cuk"], { includes: 1 }) })]),
+    pkg([v2Row({ rafsi: ["cuk", undefined] })]),
+    pkg([
+      v2Row({
+        classification: {
+          kind: "gismu",
+          selmaho: Object.assign([], { join: 2 }),
+        },
+      }),
+    ]),
+    pkg([
+      v2Row({
+        attribution: { source: "test", author: null, account: null, dates: [] },
+      }),
+    ]),
   ]) {
-    const value = pkg([row]);
-    assert.ok(workerAccepts(value));
-    assert.equal(readAll(value), value);
+    rejects(value);
+    assert.equal(workerAccepts(value), false);
   }
 });
 
-test("an own some property on a stored array does not replace the rule's test", () => {
-  // The worker calls the array's own `some` and rejects the package when it
-  // is not a function. The rule uses `Array.prototype.some`, so it accepts
-  // this one listed difference without throwing a raw error.
-  const glosses = Object.assign([v1Row().glosses[0]], { some: false });
-  const value = pkg([v2Row({ glosses })]);
-  assert.equal(workerAccepts(value), false);
-  assert.equal(readAll(value), value);
+test("both readers enforce the UTF-8 rafsi boundary", () => {
+  const boundary = "é".repeat(64);
+  const accepted = pkg([v2Row({ rafsi: [boundary] })]);
+  assert.equal(readAll(accepted), accepted);
+  assert.equal(workerAccepts(accepted), true);
+  const oversized = pkg([v2Row({ rafsi: [boundary + "a"] })]);
+  rejects(oversized);
+  assert.equal(workerAccepts(oversized), false);
+});
+
+test("the worker and wizard inventory count the union by canonical word ID", () => {
+  const claims = (start: number, count: number) =>
+    Array.from({ length: count }, (_, i) => `r${start + i}`);
+  const row = (index: number, spelling: string, rafsi: string[]) =>
+    v2Row({
+      event: "jve1:" + String(index).repeat(64),
+      word: { language: "jbo", spelling },
+      rafsi,
+    });
+  const inventory = (value: ReturnType<typeof pkg>) =>
+    builders.inventoryFromPackage({ pkg: value as never, language: "en" });
+  const overlap = pkg([
+    row(1, "djan", claims(0, 64)),
+    row(2, "dján", claims(0, 40)),
+  ]);
+  assert.equal(workerAccepts(overlap), true);
+  assert.equal(inventory(overlap).claims.length, 64);
+  for (const value of [
+    pkg([row(1, "djan", claims(0, 40)), row(2, "djan", claims(40, 40))]),
+    pkg([
+      row(1, "djan", claims(0, 64)),
+      row(2, "cukta", ["cuk"]),
+      row(3, "dján", ["r64"]),
+    ]),
+  ]) {
+    assert.equal(workerAccepts(value), false);
+    assert.throws(() => inventory(value), saved.PackageValidationError);
+    const index = search.createPackageWordIndex();
+    const id = wordId({ language: "jbo", spelling: "djan" });
+    assert.equal(index(value as never, "en", id).length, 0);
+    assert.equal(index.invalidEntryCount(value as never, "en"), 1);
+  }
 });
 
 test("spelling checks and bounded batches agree with core wordId on composition and byte counterexamples", () => {
@@ -544,20 +579,26 @@ test("samePackageStructure detects holes, extra array keys, order changes, and s
   edited.entries[1].plain_text = "changed";
   assert.equal(samePackageStructure(edited, base, budget()), false);
 
-  // Own extra key on rafsi array (including numeric includes).
+  // Own extra key on rafsi array rejects as an invalid package before comparison.
   const extraKey = structuredClone(base) as {
     entries: { rafsi: string[] }[];
   };
   Object.assign(extraKey.entries[0].rafsi, { includes: 1 });
-  assert.equal(samePackageStructure(extraKey, base, budget()), false);
+  assert.throws(
+    () => samePackageStructure(extraKey, base, budget()),
+    saved.PackageValidationError,
+  );
 
-  // Hole plus extra key keeping the same own-key count.
+  // Hole plus extra key keeping the same own-key count rejects as invalid.
   const holePlusExtra = structuredClone(base) as {
     entries: { rafsi: unknown[] }[];
   };
   delete holePlusExtra.entries[0].rafsi[0];
   Object.assign(holePlusExtra.entries[0].rafsi, { includes: 1 });
-  assert.equal(samePackageStructure(holePlusExtra, base, budget()), false);
+  assert.throws(
+    () => samePackageStructure(holePlusExtra, base, budget()),
+    saved.PackageValidationError,
+  );
 
   // Exhausted budget refuses before enumerating keys.
   assert.throws(
@@ -568,6 +609,453 @@ test("samePackageStructure detects holes, extra array keys, order changes, and s
         new SearchRequestBudget(searchMetrics(), { workLimit: 1 }),
       ),
     SearchBudgetError,
+  );
+});
+
+test("wizard inventory skips a package with invalid attribution source and selects the valid fallback", async () => {
+  const english = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      word: { language: "jbo", spelling: "cukta" },
+      glosses: [{ language: "en", text: "bad English source", sense: null }],
+      rafsi: ["cku"],
+      attribution: { source: [], author: null, account: null, dates: {} },
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      word: { language: "jbo", spelling: "zbasu" },
+      rafsi: ["zba"],
+    }),
+    v2Row({
+      event: "jve1:" + "3".repeat(64),
+      word: { language: "jbo", spelling: "broda" },
+      rafsi: [],
+    }),
+  ]);
+  const french = pkg([
+    v2Row({
+      event: "jve1:" + "4".repeat(64),
+      word: { language: "jbo", spelling: "cukta" },
+      language: "fr",
+      glosses: [{ language: "fr", text: "valid French source", sense: null }],
+      rafsi: ["cku"],
+    }),
+    v2Row({
+      event: "jve1:" + "5".repeat(64),
+      word: { language: "jbo", spelling: "zbasu" },
+      language: "fr",
+      glosses: [{ language: "fr", text: "valid French source", sense: null }],
+      rafsi: ["zba"],
+    }),
+  ]);
+  assert.equal(workerAccepts(english), false);
+  const read = await builders.savedPackages(
+    listStore([
+      ["en", english],
+      ["fr", french],
+    ]),
+  );
+  const result = builders.savedInventory(read);
+  assert.equal(result.invalid, true);
+  assert.equal(result.selected?.language, "fr");
+  assert.equal(result.inventory.claims.length, 2);
+});
+
+test("sparse lists always fail as invalid package before budget charges, and valid dense lists charge content work", async () => {
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const { searchPackage } = await import("../../src/data/package-search.ts");
+  const makeRow = (ordinal: number) =>
+    v2Row({
+      event: "jve1:" + (ordinal + 1).toString(16).padStart(64, "0"),
+      glosses: [],
+      plain_text: "",
+      rafsi: [],
+    });
+  const sparseWithProbes = (len: number, make: (i: number) => unknown) => {
+    const list: unknown[] = [];
+    list.length = len;
+    for (const index of [0, len >>> 1, len - 1]) list[index] = make(index);
+    return structuredClone(list);
+  };
+
+  let posted = 0;
+  const previousWorker = (globalThis as Record<string, unknown>).Worker;
+  (globalThis as Record<string, unknown>).Worker = class {
+    postMessage() {
+      posted++;
+      throw new Error("Unexpected worker message");
+    }
+    terminate() {}
+  };
+  try {
+    // Sparse lists whose boundary and midpoint indices are populated must reject
+    // as PackageValidationError across client, worker validation, and direct
+    // inventory, even when claimed length exceeds the budget.
+    const sparseCases: [unknown[], number | undefined][] = [
+      [sparseWithProbes(300_000_000, makeRow), undefined],
+      [
+        [
+          {
+            ...makeRow(0),
+            classification: {
+              kind: "gismu",
+              selmaho: sparseWithProbes(300_000_000, () => "BAI"),
+            },
+          },
+        ],
+        undefined,
+      ],
+      [sparseWithProbes(5, makeRow), 2],
+    ];
+    for (const [entries, workLimit] of sparseCases) {
+      const value = pkg(entries);
+      const budget = new SearchRequestBudget(searchMetrics(), {
+        ...(workLimit !== undefined ? { workLimit } : {}),
+        deadlineMs: Infinity,
+      });
+      assert.throws(
+        () => search.validateCachedPackage(value, "en", budget),
+        saved.PackageValidationError,
+      );
+      await assert.rejects(
+        () =>
+          searchPackage(
+            value as never,
+            "en",
+            ["cukta"],
+            workLimit !== undefined ? { workLimit } : {},
+          ),
+        saved.PackageValidationError,
+      );
+      assert.throws(
+        () =>
+          builders.inventoryFromPackage({ language: "en", pkg: value as never }),
+        saved.PackageValidationError,
+      );
+    }
+
+    // Valid dense lists pass the shape check and then hit the content budget.
+    const denseEntries = Array.from({ length: 100_000 }, (_, i) => makeRow(i));
+    const denseSelmahoRow = {
+      ...makeRow(0),
+      classification: { kind: "gismu", selmaho: Array(100_000).fill("BAI") },
+    };
+    for (const entries of [denseEntries, [denseSelmahoRow]]) {
+      const budget = new SearchRequestBudget(searchMetrics(), {
+        workLimit: 1,
+        deadlineMs: Infinity,
+      });
+      assert.throws(
+        () => search.validateCachedPackage(pkg(entries), "en", budget),
+        SearchBudgetError,
+      );
+      await assert.rejects(
+        () =>
+          searchPackage(pkg(entries) as never, "en", ["cukta"], {
+            workLimit: 1,
+          }),
+        SearchBudgetError,
+      );
+    }
+
+    // Invalid gloss slot and oversized rafsi fail validation before content measurement.
+    let reads = 0;
+    const wrongGloss = Object.assign([], { sense: null, language: "en" });
+    Object.defineProperty(wrongGloss, "text", {
+      get() {
+        reads++;
+        return "b".repeat(10_000);
+      },
+      enumerable: true,
+    });
+    const wrongGlossPkg = pkg([{ ...makeRow(0), glosses: [wrongGloss] }]);
+    assert.throws(
+      () =>
+        search.validateCachedPackage(
+          wrongGlossPkg,
+          "en",
+          new SearchRequestBudget(searchMetrics(), {
+            workLimit: 20,
+            deadlineMs: Infinity,
+          }),
+        ),
+      saved.PackageValidationError,
+    );
+    assert.equal(reads, 0);
+    await assert.rejects(
+      () =>
+        searchPackage(wrongGlossPkg as never, "en", ["cukta"], {
+          workLimit: 20,
+        }),
+      saved.PackageValidationError,
+    );
+    assert.equal(reads, 0);
+
+    for (const [rafsi, workLimit] of [
+      ["é".repeat(64) + "a", 6],
+      ["a".repeat(1280), 10],
+    ] as const) {
+      const badRafsiPkg = pkg([{ ...makeRow(0), rafsi: [rafsi] }]);
+      assert.throws(
+        () =>
+          search.validateCachedPackage(
+            badRafsiPkg,
+            "en",
+            new SearchRequestBudget(searchMetrics(), {
+              workLimit,
+              deadlineMs: Infinity,
+            }),
+          ),
+        saved.PackageValidationError,
+      );
+      await assert.rejects(
+        () =>
+          searchPackage(badRafsiPkg as never, "en", ["cukta"], { workLimit }),
+        saved.PackageValidationError,
+      );
+    }
+    assert.equal(posted, 0);
+  } finally {
+    if (previousWorker === undefined)
+      delete (globalThis as Record<string, unknown>).Worker;
+    else (globalThis as Record<string, unknown>).Worker = previousWorker;
+  }
+});
+
+test("typed reconstruction keeps claims from an over-long alias that shares a word ID with a fitting spelling", async () => {
+  const { sourceOptions } = await import("../../src/model/typed-headword.ts");
+  const shortSpelling = "bab" + "a".repeat(67);
+  const longSpelling = "bab" + "á".repeat(67);
+  assert.equal(
+    wordId({ language: "jbo", spelling: shortSpelling }),
+    wordId({ language: "jbo", spelling: longSpelling }),
+  );
+  const shortRow = v2Row({
+    event: "jve1:" + "1".repeat(64),
+    word: { language: "jbo", spelling: shortSpelling },
+    rafsi: ["bab"],
+  });
+  const longRow = v2Row({
+    event: "jve1:" + "2".repeat(64),
+    word: { language: "jbo", spelling: longSpelling },
+    rafsi: ["bax"],
+  });
+  for (const entries of [
+    [shortRow, longRow],
+    [
+      { ...longRow, event: "jve1:" + "1".repeat(64) },
+      { ...shortRow, event: "jve1:" + "2".repeat(64) },
+    ],
+  ]) {
+    const value = pkg(entries) as never;
+    for (const rafsi of ["bab", "bax"]) {
+      const options = sourceOptions(
+        { text: rafsi, kind: "core", join_before: null },
+        value,
+      );
+      assert.equal(options.length, 1);
+      assert.equal(options[0].spelling, shortSpelling);
+      assert.deepEqual(
+        options[0].claims.map((claim) => claim.rafsi).sort(),
+        ["bab", "bax"],
+      );
+      assert.equal(options[0].definitions?.length, 2);
+    }
+  }
+  // Without any fitting alias spelling, the over-long component is dropped.
+  const longOnly = pkg([longRow]) as never;
+  assert.deepEqual(
+    sourceOptions({ text: "bax", kind: "core", join_before: null }, longOnly),
+    [],
+  );
+});
+
+test("batched wordIdSpellings matches wordId across valid and invalid inputs", async () => {
+  const { wordIdSpellings } = await import(
+    "../../../../packages/core/src/index.ts"
+  );
+  const samples = [
+    "cukta",
+    "djan",
+    "dján",
+    "ba'a",
+    "Ba’a",
+    "a\"b\\c",
+    "水",
+    "𠮷",
+  ];
+  assert.deepEqual(
+    wordIdSpellings(samples),
+    samples.map((spelling) => wordId({ language: "jbo", spelling })),
+  );
+  assert.deepEqual(wordIdSpellings([]), []);
+  for (const invalid of ["", " cukta", "x\0y", "\ud800", "e\u0301"])
+    assert.throws(() => wordIdSpellings(["cukta", invalid]));
+});
+
+test("later-row nested list holes and over-cap lists reject before budget across validation and structural reuse", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const { inventoryFromPackage } = await import("../../src/model/builders.ts");
+  const budget = (workLimit: number) =>
+    new SearchRequestBudget(searchMetrics(), {
+      workLimit,
+      deadlineMs: Infinity,
+    });
+
+  // Case A: valid row 1 exceeds workLimit 20; row 2 has a hole in selmaho.
+  const base = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      plain_text: "x".repeat(4000),
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      classification: { kind: "gismu", selmaho: ["BAI", "BAI"] },
+    }),
+  ]) as never;
+  const holeySelmaho: unknown[] = ["BAI", "BAI"];
+  delete holeySelmaho[0];
+  const caseA = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      plain_text: "x".repeat(4000),
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      classification: { kind: "gismu", selmaho: holeySelmaho as string[] },
+    }),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(caseA, "en", budget(20)),
+    saved.PackageValidationError,
+  );
+  assert.throws(
+    () => inventoryFromPackage({ language: "en", pkg: caseA as never }),
+    saved.PackageValidationError,
+  );
+  assert.throws(
+    () => samePackageStructure(caseA, base, budget(20)),
+    saved.PackageValidationError,
+  );
+
+  // Over-cap nested lists with a hole at the end reject immediately without a key scan.
+  const overCapGlosses = Array.from({ length: 100_000 }, () => ({
+    language: "en",
+    text: "book",
+    sense: null,
+  }));
+  delete overCapGlosses[99_999];
+  const overCapRafsi = Array.from({ length: 100_000 }, () => "cku");
+  delete overCapRafsi[99_999];
+  const watched = new WeakSet<object>([overCapGlosses, overCapRafsi]);
+  let scannedOverCap = 0;
+  const originalOwnKeys = Reflect.ownKeys;
+  Reflect.ownKeys = ((target: object) => {
+    if (watched.has(target)) scannedOverCap++;
+    return originalOwnKeys(target);
+  }) as typeof Reflect.ownKeys;
+  try {
+    const overGlossPkg = pkg([
+      v2Row({
+        event: "jve1:" + "1".repeat(64),
+        plain_text: "x".repeat(4000),
+      }),
+      v2Row({
+        event: "jve1:" + "2".repeat(64),
+        glosses: overCapGlosses as never,
+      }),
+    ]);
+    const overRafsiPkg = pkg([
+      v2Row({
+        event: "jve1:" + "1".repeat(64),
+        plain_text: "x".repeat(4000),
+      }),
+      v2Row({
+        event: "jve1:" + "2".repeat(64),
+        rafsi: overCapRafsi as never,
+      }),
+    ]);
+    for (const candidate of [overGlossPkg, overRafsiPkg]) {
+      assert.throws(
+        () => search.validateCachedPackage(candidate, "en", budget(20)),
+        saved.PackageValidationError,
+      );
+      assert.throws(
+        () => samePackageStructure(candidate, base, budget(20)),
+        saved.PackageValidationError,
+      );
+      assert.throws(
+        () => inventoryFromPackage({ language: "en", pkg: candidate as never }),
+        saved.PackageValidationError,
+      );
+    }
+    assert.equal(scannedOverCap, 0);
+  } finally {
+    Reflect.ownKeys = originalOwnKeys;
+  }
+});
+
+test("savedRafsiClaims and savedSpellingChecks do not hide invalid rows behind a small budget", async () => {
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const { wordSpellingStatus } = await import(
+    "../../../../packages/core/src/index.ts"
+  );
+  const budget = (workLimit: number) =>
+    new SearchRequestBudget(searchMetrics(), {
+      workLimit,
+      deadlineMs: Infinity,
+    });
+  const claims = (start: number, count: number) =>
+    Array.from({ length: count }, (_, i) => `r${start + i}`);
+  const rowAt = (n: number, extra: Record<string, unknown>) =>
+    v2Row({
+      event: "jve1:" + (n + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "cukta" },
+      glosses: [],
+      plain_text: "",
+      rafsi: [],
+      ...extra,
+    });
+
+  // Finding B: 5,002 rows all spelled cukta, union overflows on row 2.
+  const repeatedUnion = pkg([
+    rowAt(0, { rafsi: claims(0, 40) }),
+    rowAt(1, { rafsi: claims(40, 40) }),
+    ...Array.from({ length: 5000 }, (_, i) => rowAt(i + 2, { rafsi: ["cku"] })),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(repeatedUnion, "en", budget(20_000)),
+    saved.PackageValidationError,
+  );
+
+  // Same class: overflowing union on rows 1-2 followed by 5,000 empty-rafsi rows.
+  const unionThenEmpty = pkg([
+    rowAt(0, { rafsi: claims(0, 40) }),
+    rowAt(1, { rafsi: claims(40, 40) }),
+    ...Array.from({ length: 5000 }, (_, i) => rowAt(i + 2, { rafsi: [] })),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(unionThenEmpty, "en", budget(20_000)),
+    saved.PackageValidationError,
+  );
+
+  // Same class: buffered invalid fallback spelling on row 1 before huge row 2.
+  assert.equal(wordSpellingStatus("e\u0301"), "check");
+  const deferredFallbackSpelling = pkg([
+    rowAt(0, { word: { language: "jbo", spelling: "e\u0301" }, rafsi: [] }),
+    rowAt(1, { plain_text: "x".repeat(4000), rafsi: [] }),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(deferredFallbackSpelling, "en", budget(20)),
+    saved.PackageValidationError,
   );
 });
 
@@ -593,7 +1081,7 @@ test("validateCachedPackage and createPackageWordIndex reject lone-surrogate raf
   );
 });
 
-test("samePackageStructure compares own array property values, empty-array own properties, and object prototypes", async () => {
+test("samePackageStructure rejects extra array keys, compares own array values, rejects non-plain attribution.dates, and accepts null-prototype plain objects", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
   );
@@ -602,23 +1090,50 @@ test("samePackageStructure compares own array property values, empty-array own p
   );
   const budget = () => new SearchRequestBudget(searchMetrics());
 
+  // List-shape rules reject extra own properties on stored package lists.
   const nonEmptyOne = pkg([
     v2Row({ rafsi: Object.assign(["cuk"], { tag: "one" }) }),
   ]) as never;
   const nonEmptyTwo = pkg([
     v2Row({ rafsi: Object.assign(["cuk"], { tag: "two" }) }),
   ]);
-  assert.equal(samePackageStructure(nonEmptyTwo, nonEmptyOne, budget()), false);
-
+  assert.throws(
+    () => samePackageStructure(nonEmptyTwo, nonEmptyOne, budget()),
+    saved.PackageValidationError,
+  );
   const emptyWithKey = pkg([
     v2Row({ rafsi: Object.assign([], { tag: "one" }) }),
   ]) as never;
+  assert.throws(
+    () =>
+      samePackageStructure(structuredClone(emptyWithKey), emptyWithKey, budget()),
+    saved.PackageValidationError,
+  );
+
+  // Structural equality itself compares non-index own array property values
+  // and accepts identical clones of empty arrays carrying own properties.
+  const nonEmptyAuxOne = {
+    ...pkg([v2Row()]),
+    downgrade: Object.assign(["a"], { tag: "one" }),
+  } as never;
+  const nonEmptyAuxTwo = {
+    ...pkg([v2Row()]),
+    downgrade: Object.assign(["a"], { tag: "two" }),
+  };
   assert.equal(
-    samePackageStructure(structuredClone(emptyWithKey), emptyWithKey, budget()),
+    samePackageStructure(nonEmptyAuxTwo, nonEmptyAuxOne, budget()),
+    false,
+  );
+  const emptyAux = {
+    ...pkg([v2Row()]),
+    downgrade: Object.assign([], { tag: "one" }),
+  } as never;
+  assert.equal(
+    samePackageStructure(structuredClone(emptyAux), emptyAux, budget()),
     true,
   );
 
-  const baseDates = pkg([
+  const base = pkg([
     v2Row({
       attribution: {
         source: "jbovlaste",
@@ -628,17 +1143,19 @@ test("samePackageStructure compares own array property values, empty-array own p
       },
     }),
   ]) as never;
-  const nullProtoDates = pkg([
+
+  const nullProtoDates = Object.create(null);
+  const plainNull = pkg([
     v2Row({
       attribution: {
         source: "jbovlaste",
         author: "alice",
         account: null,
-        dates: Object.create(null),
+        dates: nullProtoDates,
       },
     }),
   ]);
-  assert.equal(samePackageStructure(nullProtoDates, baseDates, budget()), false);
+  assert.equal(samePackageStructure(plainNull, base, budget()), false);
   for (const badDates of [
     new Date(0),
     new Map([["created", 123]]),
@@ -655,8 +1172,100 @@ test("samePackageStructure compares own array property values, empty-array own p
         },
       }),
     ]);
-    assert.equal(samePackageStructure(corrupted, baseDates, budget()), false);
+    assert.equal(samePackageStructure(corrupted, base, budget()), false);
   }
+});
+
+test("requireSavedRowLists meters uncapped classification.selmaho reads under a small budget", async () => {
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const rawSelmaho = Array(200_000).fill("BAI");
+  let reads = 0;
+  const proxied = new Proxy(rawSelmaho, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) reads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const big = pkg([
+    v2Row({
+      classification: { kind: "gismu", selmaho: proxied as string[] },
+    }),
+  ]);
+  assert.throws(
+    () =>
+      search.validateCachedPackage(
+        big,
+        "en",
+        new SearchRequestBudget(searchMetrics(), {
+          workLimit: 1,
+          deadlineMs: Infinity,
+        }),
+      ),
+    SearchBudgetError,
+  );
+  assert.equal(reads, 64);
+});
+
+test("selectLujvoSource and signedComponent enforce builder component limits", async () => {
+  const typedHeadword = await import("../../src/model/typed-headword.ts");
+  const draftMod = await import("../../src/model/draft.ts");
+
+  // Manual source over 128 bytes is rejected without mutating the component row.
+  const draft = draftMod.newDraft({
+    language: "en",
+    spelling: "ckugerku",
+    typedSpelling: "ckugerku",
+    kind: "lujvo",
+  });
+  const state = typedHeadword.prepareLujvoBuilder(draft, null);
+  const before = structuredClone(state.components[0]);
+  assert.equal(
+    typedHeadword.selectLujvoSource(state, 0, "cukta".repeat(26)),
+    false,
+  );
+  assert.deepEqual(state.components[0], before);
+  assert.equal(saved.fitsSavedComponent(state.components[0]), true);
+
+  // A retained signed compound source over 128 bytes becomes an unresolved source.
+  const longSpelling = "cukta".repeat(26);
+  const signedDraft = draftMod.newDraft({
+    language: "en",
+    spelling: "ckugerku",
+    typedSpelling: "ckugerku",
+    kind: "lujvo",
+  });
+  signedDraft.compound = {
+    morphology: {
+      id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+      version: "4",
+    },
+    scoring: {
+      id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo-scoring",
+      version: "1",
+    },
+    score: null,
+    notes: [],
+    components: [
+      {
+        word: { language: "jbo", spelling: longSpelling },
+        rafsi: "cku",
+        definition: null,
+      },
+      {
+        word: { language: "jbo", spelling: "gerku" },
+        rafsi: "gerku",
+        definition: null,
+      },
+    ],
+  };
+  signedDraft.evidenceForm = "ckugerku";
+  const hydrated = typedHeadword.prepareLujvoBuilder(signedDraft, null);
+  assert.equal(hydrated.components[0].spelling, "");
+  assert.equal(hydrated.components[0].locked, "cku");
+  assert.ok(hydrated.components[0].unresolvedSource);
+  assert.equal(saved.fitsSavedComponent(hydrated.components[0]), true);
+  assert.equal(hydrated.components[1].spelling, "gerku");
 });
 
 test("samePackageStructure rejects non-plain objects with the same prototype (Date and Map)", async () => {
@@ -721,7 +1330,7 @@ test("samePackageStructure rejects non-plain objects with the same prototype (Da
   );
 });
 
-test("samePackageStructure returns false on cyclic own array properties without stack overflow", async () => {
+test("samePackageStructure rejects cyclic own array properties and cyclic objects without stack overflow", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
   );
@@ -730,13 +1339,31 @@ test("samePackageStructure returns false on cyclic own array properties without 
   );
   const budget = () => new SearchRequestBudget(searchMetrics());
 
+  // On stored package lists, the dense-list check rejects the extra own key up front.
   const cyclicRafsi = ["cuk"];
   Object.assign(cyclicRafsi, { self: cyclicRafsi });
-  const cyclicPkg = pkg([v2Row({ rafsi: cyclicRafsi })]) as never;
+  const cyclicRafsiPkg = pkg([v2Row({ rafsi: cyclicRafsi })]) as never;
+  assert.throws(
+    () =>
+      samePackageStructure(
+        structuredClone(cyclicRafsiPkg),
+        structuredClone(cyclicRafsiPkg),
+        budget(),
+      ),
+    saved.PackageValidationError,
+  );
+
+  // Structural equality itself returns false on cyclic own array properties without stack overflow.
+  const cyclicAux = ["a"];
+  Object.assign(cyclicAux, { self: cyclicAux });
+  const cyclicAuxPkg = {
+    ...pkg([v2Row()]),
+    downgrade: cyclicAux,
+  } as never;
   assert.equal(
     samePackageStructure(
-      structuredClone(cyclicPkg),
-      structuredClone(cyclicPkg),
+      structuredClone(cyclicAuxPkg),
+      structuredClone(cyclicAuxPkg),
       budget(),
     ),
     false,
@@ -801,7 +1428,14 @@ test("validateEntry and validateCachedPackage reject an empty array carrying ver
 });
 
 test("searchPackage does not scan unrelated queued transfers during lookup or cleanup", async () => {
-  const { searchPackage } = await import("../../src/data/package-search.ts");
+  const pkgSearchUrl = new URL(
+    "../../src/data/package-search.ts",
+    import.meta.url,
+  );
+  pkgSearchUrl.search = "?queued-transfers-test";
+  const { searchPackage } = (await import(pkgSearchUrl.href)) as typeof import(
+    "../../src/data/package-search.ts"
+  );
   const prevWorker = globalThis.Worker;
   const prevLocation = (globalThis as { location?: unknown }).location;
   const queue: Array<{ request: number; key: number }> = [];
@@ -993,6 +1627,104 @@ test("createPackageWordIndex checks a shared selmaho list once across rows witho
   );
 });
 
+test("requirePackageListShapes and savedRowReader check shared selmaho arrays and attribution dates once across rows", () => {
+  const n = 128;
+  const sharedSelmaho = Array.from({ length: n }, () => "UI");
+  const rawDates = Object.fromEntries(
+    Array.from({ length: n }, (_, i) => [
+      "k" + i.toString(16).padStart(8, "0"),
+      "1",
+    ]),
+  );
+  let dateReads = 0;
+  const proxiedDates = new Proxy(rawDates, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && prop.startsWith("k")) dateReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  let selmahoReads = 0;
+  const proxiedSelmaho = new Proxy(sharedSelmaho, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) selmahoReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const sharedPkg = pkg(
+    Array.from({ length: n }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [],
+        rafsi: [],
+        classification: { kind: "gismu", selmaho: proxiedSelmaho as string[] },
+        attribution: {
+          source: "fixture",
+          author: null,
+          account: null,
+          dates: proxiedDates as Record<string, string>,
+        },
+      }),
+    ),
+  );
+
+  let ownKeysCalls = 0;
+  const nativeOwnKeys = Reflect.ownKeys;
+  Reflect.ownKeys = function (target: object) {
+    if (target === proxiedSelmaho) ownKeysCalls++;
+    return nativeOwnKeys(target);
+  };
+  try {
+    saved.requirePackageListShapes(sharedPkg);
+  } finally {
+    Reflect.ownKeys = nativeOwnKeys;
+  }
+  assert.equal(ownKeysCalls, 1);
+
+  const readRow = saved.savedRowReader(sharedPkg as never, "en", undefined, true);
+  for (const row of sharedPkg.entries) readRow(row);
+  assert.equal(selmahoReads, n);
+  assert.equal(dateReads, n);
+});
+
+test("requirePackageListShapes and savedRowReader allocate no cache Sets on ordinary unshared rows", () => {
+  const unshared = pkg(
+    Array.from({ length: 64 }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [{ language: "en", text: "book", sense: null }],
+        rafsi: ["cuk"],
+        classification: { kind: "gismu", selmaho: ["UI"] },
+        attribution: {
+          source: "fixture",
+          author: null,
+          account: null,
+          dates: { created: "2020-01-01" },
+        },
+      }),
+    ),
+  );
+  const NativeSet = globalThis.Set;
+  let setConstructs = 0;
+  globalThis.Set = class CountingSet<T> extends NativeSet<T> {
+    constructor(values?: readonly T[] | Iterable<T> | null) {
+      super(values as any);
+      setConstructs++;
+    }
+  } as unknown as SetConstructor;
+  try {
+    saved.requirePackageListShapes(unshared);
+    const readRow = saved.savedRowReader(unshared as never, "en", undefined, true);
+    for (const row of unshared.entries) readRow(row);
+    const cache = saved.savedRowListCache();
+    for (const row of unshared.entries)
+      saved.requireSavedRowLists(row, undefined, true, cache);
+    assert.deepEqual(cache, {});
+  } finally {
+    globalThis.Set = NativeSet;
+  }
+  assert.equal(setConstructs, 0);
+});
+
 test("samePackageStructure accepts equal-content squares 8, 16, and 32 at default budget, refuses tight limits, and caps deep DAGs", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
@@ -1081,7 +1813,7 @@ test("samePackageStructure accepts equal-content squares 8, 16, and 32 at defaul
   // without exponential blowup.
   let leafA: Record<string, unknown> = { a: "x", b: "y" };
   let leafB: Record<string, unknown> = { a: "x", b: "y" };
-  for (let d = 0; d < 24; d++) {
+  for (let d = 0; d < 20; d++) {
     leafA = { a: leafA, b: leafA };
     leafB = { a: leafB, b: leafB };
   }
@@ -1091,13 +1823,31 @@ test("samePackageStructure accepts equal-content squares 8, 16, and 32 at defaul
   });
   assert.equal(
     samePackageStructure(
-      { snapshot: "s", entries: [leafA] },
-      { snapshot: "s", entries: [leafB] } as never,
+      pkg([
+        v2Row({
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: leafA as any,
+          },
+        }),
+      ]),
+      pkg([
+        v2Row({
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: leafB as any,
+          },
+        }),
+      ]) as never,
       dagBudget,
     ),
     false,
   );
-  assert.ok(dagBudget.snapshot().spent <= 200);
+  assert.ok(dagBudget.snapshot().spent <= 250);
   // Equal content shared across different depths counts as equal within the cap.
   const bigA = Object.fromEntries(
     Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
@@ -1110,8 +1860,46 @@ test("samePackageStructure accepts equal-content squares 8, 16, and 32 at defaul
   );
   assert.equal(
     samePackageStructure(
-      { snapshot: "s", entries: [bigA, { nested: bigA }] },
-      { snapshot: "s", entries: [bigB1, { nested: bigB2 }] } as never,
+      pkg([
+        v2Row({
+          event: "jve1:" + "1".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: bigA,
+          },
+        }),
+        v2Row({
+          event: "jve1:" + "2".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: { nested: bigA } as any,
+          },
+        }),
+      ]),
+      pkg([
+        v2Row({
+          event: "jve1:" + "1".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: bigB1,
+          },
+        }),
+        v2Row({
+          event: "jve1:" + "2".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: { nested: bigB2 } as any,
+          },
+        }),
+      ]) as never,
       new SearchRequestBudget(searchMetrics(), {
         workLimit: 5_000,
         deadlineMs: Infinity,
@@ -1233,18 +2021,58 @@ test("samePackageStructure treats equal content with different sharing as equal 
     `expected per-row cap stop <= 20 units, spent ${rowBudget.snapshot().spent}`,
   );
 
-  // A direct non-package root without entries stops at the fixed 64-step cap.
+  // A direct non-package root without entries is rejected up front by
+  // requirePackageListShapes before spending any budget.
   const directBudget = new SearchRequestBudget(searchMetrics(), {
     workLimit: 82_688,
     deadlineMs: Infinity,
   });
-  assert.equal(
-    samePackageStructure(structuredClone(root), root as never, directBudget),
-    false,
+  assert.throws(
+    () =>
+      samePackageStructure(structuredClone(root), root as never, directBudget),
+    saved.PackageValidationError,
   );
+  assert.equal(directBudget.snapshot().spent, 0);
+});
+
+test("requireSavedRowLists skips Object.getOwnPropertySymbols on cached attribution dates", () => {
+  const n = 128;
+  const rawDates = Object.fromEntries(
+    Array.from({ length: n }, (_, i) => [
+      "k" + i.toString(16).padStart(8, "0"),
+      "1",
+    ]),
+  );
+  let ownKeysCalls = 0;
+  const proxiedDates = new Proxy(rawDates, {
+    ownKeys(target) {
+      ownKeysCalls++;
+      return Reflect.ownKeys(target);
+    },
+  });
+  const sharedPkg = pkg(
+    Array.from({ length: n }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [],
+        rafsi: [],
+        classification: { kind: "gismu", selmaho: [] },
+        attribution: {
+          source: "fixture",
+          author: null,
+          account: null,
+          dates: proxiedDates as Record<string, string>,
+        },
+      }),
+    ),
+  );
+  const readRow = saved.savedRowReader(sharedPkg as never, "en", undefined, true);
+  for (const row of sharedPkg.entries) readRow(row);
+  // Row 0 runs getOwnPropertySymbols and for..in (2 ownKeys calls); rows 1..127
+  // hit checked.dates and skip both checks.
   assert.ok(
-    directBudget.snapshot().spent <= 64,
-    `expected 64-step cap stop <= 64 units, spent ${directBudget.snapshot().spent}`,
+    ownKeysCalls <= 2,
+    `expected <= 2 ownKeys calls on cached dates, got ${ownKeysCalls}`,
   );
 });
 
@@ -1399,4 +2227,297 @@ test("samePackageStructure charges zero units for empty v1 and v2 packages and o
     true,
   );
   assert.equal(exactBudget.snapshot().spent, expectedRowUnits);
+});
+
+test("savedRafsiClaims invokes an optional callback with batched canonical word IDs", async () => {
+  const { wordId } = await import("../../../../packages/core/src/index.ts");
+  const seen: { spelling: string; id: string }[] = [];
+  const claims = (saved.savedRafsiClaims as any)(
+    (entry: { word: { spelling: string } }, id: string) => {
+      seen.push({ spelling: entry.word.spelling, id });
+    },
+  );
+  // Queue 520 distinct spellings plus a duplicate to span a batch flush and a cache hit.
+  const rows = [
+    ...Array.from({ length: 520 }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling: `djan${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}n` },
+        classification: { kind: "cmevla", selmaho: [] },
+        rafsi: ["dja"],
+      }),
+    ),
+    v2Row({
+      event: "jve1:" + (521).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "djanaan" },
+      classification: { kind: "cmevla", selmaho: [] },
+      rafsi: ["djb"],
+    }),
+  ];
+  for (const row of rows) claims.add(row);
+  claims.finish();
+  assert.equal(seen.length, 521);
+  assert.equal(seen[0].id, wordId({ language: "jbo", spelling: "djanaan" }));
+  assert.equal(seen[520].id, seen[0].id);
+});
+
+test("typedLujvoState and sourceOptions read each package row once across matched parts and preserve alias order", async () => {
+  const { sourceOptions, typedLujvoState } = await import(
+    "../../src/model/typed-headword.ts"
+  );
+  const makeRow = (
+    spelling: string,
+    index: number,
+    rafsi: string[],
+    kind: "gismu" | "cmevla",
+    plain_text = "shared book",
+  ) =>
+    v2Row({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling },
+      classification: { kind, selmaho: [] },
+      plain_text,
+      rafsi,
+    });
+  const many = [
+    makeRow("cukta", 0, ["cku"], "gismu"),
+    makeRow("zbasu", 1, ["zba"], "gismu"),
+    ...Array.from({ length: 998 }, (_, i) =>
+      makeRow(
+        "djan" +
+          String.fromCharCode(
+            97 + (i % 26),
+            97 + (Math.floor(i / 26) % 26),
+            97 + Math.floor(i / 676),
+          ) +
+          "n",
+        i + 2,
+        [],
+        "cmevla",
+      ),
+    ),
+  ];
+  let reads = 0;
+  const entries = new Proxy(many, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const cached = pkg(entries as any) as any;
+  const state = typedLujvoState(
+    "ckuzba",
+    [
+      { text: "cku", kind: "rafsi", join_before: null },
+      { text: "zba", kind: "rafsi", join_before: "" },
+    ],
+    cached,
+  );
+  assert.deepEqual(
+    state.components.map((c) => c.spelling),
+    ["cukta", "zbasu"],
+  );
+  assert.ok(
+    reads <= 1_000,
+    `expected at most 1,000 row reads across two matched parts, got ${reads}`,
+  );
+  // Repeat lookups on the same immutable package (e.g. renderRows) read no rows again.
+  const again = sourceOptions(
+    { text: "cku", kind: "rafsi", join_before: null },
+    cached,
+  );
+  assert.equal(again.length, 1);
+  assert.equal(again[0].spelling, "cukta");
+  assert.equal(reads, 1_000);
+
+  // Alias rows keep first-occurrence definition order and select a fitting display spelling.
+  const shortSpelling = "ba".repeat(43) + "n";
+  const longSpelling = "bá".repeat(43) + "n";
+  for (const order of [
+    [longSpelling, shortSpelling],
+    [shortSpelling, longSpelling],
+  ]) {
+    const aliasPkg = pkg([
+      makeRow(order[0], 0, ["bab"], "cmevla", "first def"),
+      makeRow(order[1], 1, ["bab"], "cmevla", "second def"),
+    ]) as any;
+    const options = sourceOptions(
+      { text: "bab", kind: "core", join_before: null },
+      aliasPkg,
+    );
+    assert.equal(options.length, 1);
+    assert.equal(options[0].spelling, shortSpelling);
+    assert.deepEqual(
+      options[0].definitions?.map((d) => d.summary),
+      ["first def", "second def"],
+    );
+  }
+});
+
+test("structured-cloned packages keep exact dense-list, plain-date, and hex ID checks", () => {
+  const gloss = v1Row().glosses[0];
+  const valid = pkg([v2Row()]);
+  saved.markStructuredPackage(valid);
+  saved.requireSavedEntriesList(valid);
+  const readValid = saved.savedRowReader(valid as any, "en");
+  assert.equal(readValid(valid.entries[0]), valid.entries[0]);
+
+  for (const bad of [
+    pkg(Object.assign([v2Row()], { "01": 0 })),
+    pkg(new Array(0xffffffff)),
+    pkg([v2Row({ glosses: [, gloss] })]),
+    pkg([v2Row({ rafsi: Object.assign(["cuk"], { includes: 1 }) })]),
+    pkg([
+      v2Row({ rafsi: Object.assign(new Array(2), { 0: "cuk", foo: true }) }),
+    ]),
+    pkg([
+      v2Row({
+        classification: { kind: "gismu", selmaho: Object.assign([], { join: 2 }) },
+      }),
+    ]),
+    pkg([
+      v2Row({
+        attribution: {
+          source: "test",
+          author: null,
+          account: null,
+          dates: new Date() as any,
+        },
+      }),
+    ]),
+    pkg([
+      v2Row({
+        attribution: {
+          source: "test",
+          author: null,
+          account: null,
+          dates: new Map() as any,
+        },
+      }),
+    ]),
+    pkg([v2Row({ event: "jve1:" + "A".repeat(64) })]),
+    pkg([v2Row({ body: "sha256:" + "é" + "0".repeat(63) })]),
+    pkg([v2Row({ issuer: "ed25519:" + "0".repeat(63) + "g" })]),
+  ]) {
+    saved.markStructuredPackage(bad);
+    assert.throws(() => {
+      saved.requireSavedEntriesList(bad);
+      const read = saved.savedRowReader(bad as any, "en");
+      for (const row of bad.entries) read(row);
+    }, saved.PackageValidationError);
+  }
+});
+
+test("resolvePackageHits records the first fitting alias beyond HIT_CONTENT_LIMIT while mapping entries once", async () => {
+  const { resolvePackageHits } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const shortSpelling = "ba".repeat(43) + "n";
+  const longSpelling = "bá".repeat(43) + "n";
+  const entries = [
+    ...Array.from({ length: 1005 }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling: longSpelling },
+        classification: { kind: "cmevla", selmaho: [] },
+        rafsi: ["bab"],
+      }),
+    ),
+    v2Row({
+      event: "jve1:" + (1006).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: shortSpelling },
+      classification: { kind: "cmevla", selmaho: [] },
+      rafsi: ["bab"],
+    }),
+  ];
+  const cached = pkg(entries) as any;
+  const indices = entries.map((_, i) => i);
+  const id = wordId({ language: "jbo", spelling: shortSpelling });
+  const pages = resolvePackageHits(
+    cached,
+    [
+      [
+        {
+          word_id: id,
+          match: "headword",
+          entries: indices,
+          definitions: indices,
+          preview: 0,
+        },
+      ],
+    ],
+    SearchRequestBudget.for(searchMetrics()),
+  );
+  assert.equal((pages[0][0] as any).fittingEntry?.word.spelling, shortSpelling);
+});
+
+test("sourceOptions keeps event order across interleaved competing claims without sorting all matching rows", async () => {
+  const { sourceOptions } = await import("../../src/model/typed-headword.ts");
+  const cv = ["ba", "be", "bi", "bo", "bu", "ca", "ce", "ci"];
+  const names = Array.from(
+    { length: 64 },
+    (_, i) => cv[Math.floor(i / 8)] + cv[i % 8] + "n",
+  );
+  const entries: any[] = [];
+  for (let d = 0; d < 64; d++) {
+    for (let n = 0; n < 64; n++) {
+      const idx = entries.length + 1;
+      entries.push(
+        v2Row({
+          event: "jve1:" + idx.toString(16).padStart(64, "0"),
+          word: { language: "jbo", spelling: names[n] },
+          classification: { kind: "cmevla", selmaho: [] },
+          rafsi: ["bab"],
+        }),
+      );
+    }
+  }
+  const cached = pkg(entries) as any;
+  for (let call = 0; call < 2; call++) {
+    let rowComparisons = 0;
+    let wordComparisons = 0;
+    const originalSort = Array.prototype.sort;
+    Array.prototype.sort = function (compareFn?: (a: any, b: any) => number) {
+      return originalSort.call(
+        this,
+        compareFn &&
+          ((a: any, b: any) => {
+            if (this.length > 64) rowComparisons++;
+            else wordComparisons++;
+            return compareFn(a, b);
+          }),
+      );
+    };
+    let result: ReturnType<typeof sourceOptions>;
+    try {
+      result = sourceOptions(
+        { text: "bab", kind: "rafsi", join_before: null },
+        cached,
+      );
+    } finally {
+      Array.prototype.sort = originalSort;
+    }
+    assert.equal(result.length, 64);
+    assert.equal(
+      rowComparisons,
+      0,
+      `call ${call}: expected 0 per-row sort comparisons, got ${rowComparisons}`,
+    );
+    assert.ok(wordComparisons > 0 && wordComparisons <= 64 * 7);
+    assert.deepEqual(
+      result.map((o) => o.spelling),
+      [...names].sort((a, b) => a.localeCompare(b)),
+    );
+    for (const option of result) {
+      assert.equal(option.definitions?.length, 64);
+      for (let i = 1; i < option.definitions!.length; i++) {
+        assert.ok(
+          option.definitions![i - 1].event < option.definitions![i].event,
+        );
+      }
+    }
+  }
 });

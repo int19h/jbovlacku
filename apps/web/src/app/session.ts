@@ -83,9 +83,16 @@ export class Session {
   async load() {
     this.cancelUnlock();
     try {
-      this.preferences = await this.store.preferences();
+      const state =
+        typeof this.store.loadSessionState === "function"
+          ? await this.store.loadSessionState()
+          : {
+              preferences: await this.store.preferences(),
+              backup: await this.store.get<KeyBackup>("keys", "selected"),
+            };
+      this.preferences = state.preferences;
       setPreferredView(this.preferences.view);
-      this.backup = await this.store.get<KeyBackup>("keys", "selected");
+      this.backup = state.backup;
     } catch {
       this.storageAvailable = false;
       this.preferences = (await import("../data/store.ts")).defaultPreferences;

@@ -106,25 +106,28 @@ async function start() {
   const delivery = new DeliveryEngine(store);
   const offlineSigning = { value: false };
   const signer = new Signer(session, delivery, () => offlineSigning.value);
+  const sessionLoad = session.load();
   let coreError: string | null = null;
-  try {
-    await initializeCore();
-  } catch (error) {
-    coreError = describe(error);
-  }
+  const coreReady = initializeCore().then(
+    () => true,
+    (error) => {
+      coreError = describe(error);
+      return false;
+    },
+  );
   // Migrated rows count as delivered only under the full receipt rules, which need the core.
-  if (!coreError)
-    void (async () => {
-      try {
-        const changed = await store.reconcileMigrated((item, receipt) =>
-          classifyReceipt(item, receipt, () =>
-            Promise.reject(new Error("No variant lookup during migration.")),
-          ),
-        );
-        if (changed) await delivery.invalidate();
-      } catch {}
-    })();
-  await session.load();
+  void coreReady.then(async (ok) => {
+    if (!ok) return;
+    try {
+      const changed = await store.reconcileMigrated((item, receipt) =>
+        classifyReceipt(item, receipt, () =>
+          Promise.reject(new Error("No variant lookup during migration.")),
+        ),
+      );
+      if (changed) await delivery.invalidate();
+    } catch {}
+  });
+  await sessionLoad;
   applyTheme(session.preferences.theme);
   const shell = buildShell(root, session, delivery);
   const own = new OwnState(store, session, () => offlineSigning.value);
@@ -178,7 +181,10 @@ async function start() {
     warning.textContent =
       "Browser storage is unavailable. You can read online. Drafts, keys, signing, and downloaded search are disabled. Restore storage access and reload this page.";
     shell.main.before(warning);
-  } else delivery.start();
+  } else
+    void coreReady.then((ok) => {
+      if (ok) delivery.start();
+    });
   const pages: Record<string, Page> = {
     "": searchPage,
     search: searchPage,
@@ -213,7 +219,10 @@ async function start() {
     if (!preserveStatus && shell.status.textContent !== preferenceMessage)
       shell.announce("");
     syncSearchField(shell, route);
-    if (session.storageAvailable) void delivery.invalidate();
+    if (session.storageAvailable)
+      void coreReady.then((ok) => {
+        if (ok && current === revision) void delivery.invalidate();
+      });
     const main = shell.main;
     // The reader's focus choices during this render. It starts before the old
     // content leaves the page, and it ends with this render or on abort.
@@ -232,16 +241,53 @@ async function start() {
         if (current === revision) document.title = `${value} · jbovlacku`;
       },
     };
+    const renderCoreUnavailable = () => {
+      main.replaceChildren();
+      main.className = "";
+      context.title("Core unavailable");
+      main.append(
+        el("h1", { class: "page", text: "Shared core unavailable" }),
+        p(`The WebAssembly core did not load: ${coreError}`, "notice"),
+      );
+    };
     try {
-      if (coreError) {
-        context.title("Core unavailable");
-        main.append(
-          el("h1", { class: "page", text: "Shared core unavailable" }),
-          p(`The WebAssembly core did not load: ${coreError}`, "notice"),
-        );
+      const head = route.segments[0] ?? "";
+      if (head === "rafsi-pair") {
+        if (coreError) {
+          renderCoreUnavailable();
+          return;
+        }
+        const pairController = new AbortController();
+        const abortPair = () => pairController.abort();
+        signal.addEventListener("abort", abortPair, { once: true });
+        const pairContext: RenderContext = {
+          ...context,
+          live: () => current === revision && !pairController.signal.aborted,
+          signal: pairController.signal,
+        };
+        const pageDone = rafsiPairPage(route, pairContext, app, coreReady);
+        // Prevent an unhandled rejection if the page rejects before coreReady settles.
+        pageDone.catch(() => {});
+        const ok = await coreReady;
+        if (!ok) {
+          pairController.abort();
+          signal.removeEventListener("abort", abortPair);
+          if (current === revision) renderCoreUnavailable();
+          return;
+        }
+        try {
+          await pageDone;
+        } finally {
+          signal.removeEventListener("abort", abortPair);
+        }
         return;
       }
-      const head = route.segments[0] ?? "";
+      await coreReady;
+      if (current !== revision) return;
+      if (coreError) {
+        renderCoreUnavailable();
+        return;
+      }
       let page: Page | undefined = pages[head];
       // These pages have no sub-paths. An extra segment names no page.
       if (

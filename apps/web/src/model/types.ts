@@ -469,20 +469,53 @@ export interface TrustScope {
 export type JudgmentValue = "bless" | "curse" | "clear";
 export type TrustValue = "heed" | "shun" | "clear";
 export const allScope: TrustScope = { kind: "*", word: "*", language: "*" };
+const LOWER_HEX = new Uint8Array(128);
+for (let code = 48; code <= 57; code++) LOWER_HEX[code] = 1;
+for (let code = 97; code <= 102; code++) LOWER_HEX[code] = 1;
+
+function isLowerHex64(value: string, offset: number): boolean {
+  for (let i = offset; i < offset + 64; i += 8) {
+    if (
+      (LOWER_HEX[value.charCodeAt(i)] &
+        LOWER_HEX[value.charCodeAt(i + 1)] &
+        LOWER_HEX[value.charCodeAt(i + 2)] &
+        LOWER_HEX[value.charCodeAt(i + 3)] &
+        LOWER_HEX[value.charCodeAt(i + 4)] &
+        LOWER_HEX[value.charCodeAt(i + 5)] &
+        LOWER_HEX[value.charCodeAt(i + 6)] &
+        LOWER_HEX[value.charCodeAt(i + 7)]) !==
+      1
+    )
+      return false;
+  }
+  return true;
+}
+
 export const eventId = (value: unknown): value is string =>
   typeof value === "string" &&
-  value.length === "jve1:".length + 64 &&
-  /^jve1:[0-9a-f]+$/.test(value);
+  value.length === 69 &&
+  value.startsWith("jve1:") &&
+  isLowerHex64(value, 5);
 export const wordIdValid = (value: unknown): value is string =>
-  typeof value === "string" && /^jvw1:[0-9a-f]{64}$/.test(value);
+  typeof value === "string" &&
+  value.length === 69 &&
+  value.startsWith("jvw1:") &&
+  isLowerHex64(value, 5);
 export const pairIdValid = (value: unknown): value is string =>
-  typeof value === "string" && /^jvr1:[0-9a-f]{64}$/.test(value);
+  typeof value === "string" &&
+  value.length === 69 &&
+  value.startsWith("jvr1:") &&
+  isLowerHex64(value, 5);
 export const hashId = (value: unknown): value is string =>
-  typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+  typeof value === "string" &&
+  value.length === 71 &&
+  value.startsWith("sha256:") &&
+  isLowerHex64(value, 7);
 export const identityId = (value: unknown): value is string =>
   typeof value === "string" &&
-  value.length === "ed25519:".length + 64 &&
-  /^ed25519:[0-9a-f]+$/.test(value);
+  value.length === 72 &&
+  value.startsWith("ed25519:") &&
+  isLowerHex64(value, 8);
 export const languageTag = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length <= 63 &&

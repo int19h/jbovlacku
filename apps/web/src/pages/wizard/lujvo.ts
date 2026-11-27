@@ -49,7 +49,13 @@ import type { App } from "../../app/context.ts";
 import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage, LocalHit } from "../../data/search.ts";
-import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
+import {
+  fitsComponentSpelling,
+  fitsSavedComponent,
+  INVALID_PACKAGE_MESSAGE,
+  PACKAGE_RAFSI_LIMIT,
+  validPackageRafsi,
+} from "../../data/saved-package.ts";
 import {
   cappedHitEntries,
   distinctHitRafsi,
@@ -120,6 +126,23 @@ export async function lujvoPage(
     invalid: packageInvalid,
   } = savedInventory(saved);
   const cached = selected?.pkg ?? null;
+  let restoredInvalid = false;
+  for (const row of draft.lujvo?.components ?? []) {
+    if (fitsSavedComponent(row)) continue;
+    restoredInvalid = true;
+    const locked =
+      row.locked && fitsComponentSpelling(row.locked) ? row.locked : null;
+    Object.assign(row, {
+      spelling: "",
+      kind: "other",
+      definition: null,
+      definitions: [],
+      gloss: "",
+      claims: [],
+      locked,
+      unresolvedSource: "Link a source word if you know it.",
+    });
+  }
   let state;
   try {
     state = prepareLujvoBuilder(draft, cached);
@@ -168,6 +191,10 @@ export async function lujvoPage(
     el("h1", { id: "h1", class: "page", text: "Build the lujvo" }),
   );
   if (packageInvalid) section.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
+  if (restoredInvalid)
+    section.append(
+      p("A saved source exceeded the builder limits. Choose the source again.", "notice"),
+    );
   section.append(
     el(
       "p",
@@ -371,7 +398,17 @@ export async function lujvoPage(
     }
     if (!current()) return;
     for (const hit of hits) {
-      const entry = hit.entries[0];
+      const fittingEntry =
+        hit.fittingEntry !== undefined
+          ? hit.fittingEntry
+          : (hit.entries.find((row) =>
+              fitsComponentSpelling(row.word.spelling),
+            ) ?? null);
+      const entry = fittingEntry ?? hit.entries[0];
+      const displaySpelling = fittingEntry
+        ? fittingEntry.word.spelling
+        : hit.word.spelling;
+      const fits = Boolean(fittingEntry);
       const kind =
         (entry.classification as { kind?: string } | null)?.kind ?? "other";
       // The request bounds hits, not the entries inside each hit: one word
@@ -385,12 +422,21 @@ export async function lujvoPage(
       // so concurrent Adds keep their click order and the component
       // survives immediate navigation. Nothing is silently truncated.
       const pushPart = () => {
-        const id = wordId({ language: "jbo", spelling: hit.word.spelling });
+        const id = hit.word_id;
         const claims = distinctHitRafsi(hit.entries);
+        if (
+          claims.length > PACKAGE_RAFSI_LIMIT ||
+          !claims.every(validPackageRafsi)
+        ) {
+          addResults.replaceChildren(
+            el("li", { class: "notice", text: INVALID_PACKAGE_MESSAGE }),
+          );
+          return;
+        }
         editLujvoRows(state, (rows) =>
           rows.push({
             id: componentId(),
-            spelling: hit.word.spelling,
+            spelling: displaySpelling,
             kind,
             // A specific definition is recorded only when the author chooses one below.
             definition: null,
@@ -411,12 +457,11 @@ export async function lujvoPage(
       };
       const item = el("li", { class: "similar-item" });
       item.append(
-        el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
+        el("span", { class: "hw", lang: "jbo", text: displaySpelling }),
         text(` ${kindLabel(kind)}`, "meta"),
         text(
           ` · ${
             entry.glosses
-              .filter(() => true)
               .map((g) => g.text)
               .join(", ") || entry.plain_text.slice(0, 60)
           }`,
@@ -433,16 +478,12 @@ export async function lujvoPage(
               ),
             ]
           : []),
-        button(
-          "Add",
-          () => {
-            pushPart();
-          },
-          {
-            class: "btn btn-quiet",
-            "aria-label": `Add ${hit.word.spelling}`,
-          },
-        ),
+        fits
+          ? button("Add", pushPart, {
+              class: "btn btn-quiet",
+              "aria-label": `Add ${displaySpelling}`,
+            })
+          : p("This spelling exceeds the builder limit of 128 bytes.", "meta"),
       );
       addResults.append(item);
     }
@@ -457,17 +498,32 @@ export async function lujvoPage(
     } catch {
       // An invalid query stays editable and cannot supply a component identity.
     }
+    const enteredSpelling = analysis.normalized
+      ? stripAcuteAccents(query) !== query && analysis.kind === "cmevla"
+        ? normalizeAcuteDisplay(query)
+        : analysis.normalized
+      : null;
+    const exactHit =
+      queryIdentity !== null
+        ? hits.find((h) => h.word_id === queryIdentity)
+        : undefined;
+    const hasExactHit = Boolean(exactHit);
+    const hasUsableExactHit = Boolean(
+      exactHit &&
+        (exactHit.fittingEntry !== undefined
+          ? exactHit.fittingEntry
+          : exactHit.entries.find((row) =>
+              fitsComponentSpelling(row.word.spelling),
+            )),
+    );
     if (
-      analysis.normalized &&
+      enteredSpelling &&
       queryIdentity &&
       (stripAcuteAccents(query) === query || analysis.kind !== "unknown") &&
-      !hits.some((h) => wordId(h.word) === queryIdentity)
+      !hasUsableExactHit &&
+      (!hasExactHit || fitsComponentSpelling(enteredSpelling))
     ) {
       const item = el("li", { class: "similar-item" });
-      const enteredSpelling =
-        stripAcuteAccents(query) !== query && analysis.kind === "cmevla"
-          ? normalizeAcuteDisplay(query)
-          : analysis.normalized;
       const kind =
         analysis.kind === "fuhivla"
           ? "fuhivla"
@@ -480,13 +536,21 @@ export async function lujvoPage(
                 : analysis.kind === "cmevla"
                   ? "cmevla"
                   : "other";
+      if (!fitsComponentSpelling(enteredSpelling)) {
+        addResults.append(
+          p("This spelling exceeds the builder limit of 128 bytes.", "notice"),
+        );
+        return;
+      }
       const lookup =
         !answered || !selected
           ? "local dictionary lookup is unavailable"
-          : packageWordEntries(selected.pkg, selected.language, queryIdentity)
-                .length
-            ? "no exact match in these results"
-            : "not in the local package";
+          : hasExactHit
+            ? "listed spelling exceeds the 128-byte builder limit"
+            : packageWordEntries(selected.pkg, selected.language, queryIdentity)
+                  .length
+              ? "no exact match in these results"
+              : "not in the local package";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
         text(` ${kindLabel(kind)}, ${lookup}`, "meta"),
@@ -605,8 +669,7 @@ export async function lujvoPage(
             const choice = options.find(
               (choice) => choice.spelling === source.input.value,
             );
-            if (!choice) return;
-            selectLujvoSource(state, index, choice);
+            if (!choice || !selectLujvoSource(state, index, choice)) return;
             saver.touch();
             rebuild();
           });
@@ -622,12 +685,21 @@ export async function lujvoPage(
             lang: "jbo",
             spellcheck: false,
           });
+          const sourceNotice = p("", "notice");
+          sourceNotice.hidden = true;
           source.input.addEventListener("change", () => {
-            selectLujvoSource(state, index, source.input.value);
+            if (!selectLujvoSource(state, index, source.input.value)) {
+              sourceNotice.textContent =
+                "This spelling exceeds the builder limit of 128 bytes.";
+              sourceNotice.hidden = false;
+              return;
+            }
+            sourceNotice.textContent = "";
+            sourceNotice.hidden = true;
             saver.touch();
             rebuild();
           });
-          item.append(source.wrapper);
+          item.append(source.wrapper, sourceNotice);
           if (!options.length && !component.spelling)
             item.append(
               p(
@@ -810,21 +882,43 @@ export async function lujvoPage(
         lang: "jbo",
       });
       known.input.style.width = "12rem";
+      const knownNotice = p("", "notice");
+      knownNotice.hidden = true;
+      knownNotice.style.flexBasis = "100%";
+      knownNotice.style.margin = "0";
       known.input.addEventListener("change", () => {
-        const id = wordId({ language: "jbo", spelling: component.spelling });
         const packaged = component.claims.filter((c) =>
           inventory.claims.some((k) => k.pair === c.pair),
         );
-        const entered = known.input.value
-          .split(",")
-          .map((s) => s.trim().toLowerCase())
-          .filter(Boolean);
+        const entered = [
+          ...new Set(
+            known.input.value
+              .split(",")
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean),
+          ),
+        ];
+        const extra = entered.filter(
+          (r) => !packaged.some((c) => c.rafsi === r),
+        );
+        if (extra.some((r) => !validPackageRafsi(r))) {
+          knownNotice.textContent =
+            "Each rafsi must fit within the builder limit of 128 bytes.";
+          knownNotice.hidden = false;
+          return;
+        }
+        if (packaged.length + extra.length > PACKAGE_RAFSI_LIMIT) {
+          knownNotice.textContent = `A part can list at most ${PACKAGE_RAFSI_LIMIT} rafsi.`;
+          knownNotice.hidden = false;
+          return;
+        }
+        const id = wordId({ language: "jbo", spelling: component.spelling });
+        knownNotice.textContent = "";
+        knownNotice.hidden = true;
         editLujvoRows(state, (rows) => {
           rows[index].claims = [
             ...packaged,
-            ...entered
-              .filter((r) => !packaged.some((c) => c.rafsi === r))
-              .map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
+            ...extra.map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
           ];
         });
         saver.touch();
@@ -849,7 +943,7 @@ export async function lujvoPage(
       remove.style.position = "absolute";
       remove.style.top = "14px";
       remove.style.right = "16px";
-      item.append(moves, name, chips, known.wrapper, remove);
+      item.append(moves, name, chips, known.wrapper, remove, knownNotice);
       if (row?.diagnostics.length)
         item.append(
           el("p", {

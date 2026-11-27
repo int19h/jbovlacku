@@ -16,6 +16,7 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
+  isV2,
   packageCause,
   reportPackageError,
   type CachedPackage,
@@ -26,8 +27,9 @@ import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
-  savedRow,
-  savedRowListCache,
+  savedRafsiClaims,
+  requirePackageListShapes,
+  savedRowReader,
   savedSpellingChecks,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
@@ -662,12 +664,16 @@ async function preferencesBody(context: RenderContext, app: App) {
       if (pkg)
         checks.push(() => {
           try {
+            requirePackageListShapes(pkg);
+            const readRow = savedRowReader(pkg, key, undefined, true);
+            const claims = savedRafsiClaims();
             const spellings = savedSpellingChecks();
-            const checkedLists = savedRowListCache();
-            for (const entry of pkg.entries)
-              spellings.add(
-                savedRow(entry, pkg.version, key, checkedLists).word.spelling,
-              );
+            for (const value of pkg.entries) {
+              const entry = readRow(value);
+              if (isV2(entry) && entry.rafsi.length) claims.add(entry);
+              else spellings.add(entry.word.spelling);
+            }
+            claims.finish();
             spellings.finish();
             detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
               pkg.downgrade

@@ -20,6 +20,7 @@ import {
   discardedPredecessorReads,
   DISCARDED_PREDECESSOR,
 } from "./outbox-graph.ts";
+import { markStructuredPackage } from "./saved-package.ts";
 import {
   PROJECTION_LATEST_KEY,
   PROJECTION_PRODUCER_KEY,
@@ -443,44 +444,67 @@ export class LocalStore {
       return new Promise((resolve, reject) => {
         const tx = db.transaction(["packages", "packageRevisions"]);
         const revision = tx.objectStore("packageRevisions").get(id);
-        revision.onsuccess = () => {
-          const rev =
-            typeof revision.result === "string" ? revision.result : undefined;
-          if (rev !== undefined) {
-            const old = this.packageCache.get(id);
-            if (old && old.revision === rev) {
-              this.packageCache.delete(id);
-              this.packageCache.set(id, old);
-              resolve(old.value as T | undefined);
-              return;
-            }
+        const finishRead = (rev: string | undefined, value: unknown) => {
+          markStructuredPackage(value);
+          if (value && typeof value === "object" && rev !== undefined) {
+            packageKeys.set(value, JSON.stringify([db.name, id, rev]));
+            this.packageCache.delete(id);
+            this.packageCache.set(id, {
+              revision: rev,
+              value,
+            });
+            if (this.packageCache.size > 2)
+              this.packageCache.delete(this.packageCache.keys().next().value!);
           } else {
             this.packageCache.delete(id);
           }
+          resolve(value as T | undefined);
+        };
+        if (!this.packageCache.has(id)) {
+          // On a cold read, overlap the revision lookup and package read in
+          // the same readonly transaction.
           const request = tx.objectStore("packages").get(id);
+          let revDone = false;
+          let pkgDone = false;
+          let rev: string | undefined;
+          let value: unknown;
+          const maybeDone = () => {
+            if (revDone && pkgDone) finishRead(rev, value);
+          };
+          revision.onsuccess = () => {
+            rev =
+              typeof revision.result === "string"
+                ? revision.result
+                : undefined;
+            revDone = true;
+            maybeDone();
+          };
           request.onsuccess = () => {
-            if (
-              request.result &&
-              typeof request.result === "object" &&
-              rev !== undefined
-            ) {
-              packageKeys.set(
-                request.result,
-                JSON.stringify([db.name, id, rev]),
-              );
-              this.packageCache.delete(id);
-              this.packageCache.set(id, {
-                revision: rev,
-                value: request.result,
-              });
-              if (this.packageCache.size > 2)
-                this.packageCache.delete(this.packageCache.keys().next().value!);
+            value = request.result;
+            pkgDone = true;
+            maybeDone();
+          };
+        } else {
+          revision.onsuccess = () => {
+            const rev =
+              typeof revision.result === "string"
+                ? revision.result
+                : undefined;
+            if (rev !== undefined) {
+              const old = this.packageCache.get(id);
+              if (old && old.revision === rev) {
+                this.packageCache.delete(id);
+                this.packageCache.set(id, old);
+                resolve(old.value as T | undefined);
+                return;
+              }
             } else {
               this.packageCache.delete(id);
             }
-            resolve(request.result);
+            const request = tx.objectStore("packages").get(id);
+            request.onsuccess = () => finishRead(rev, request.result);
           };
-        };
+        }
         tx.onabort = () =>
           reject(
             tx.error ?? new Error("Local storage did not read this package."),
@@ -510,6 +534,7 @@ export class LocalStore {
       idbRequest(store.getAllKeys()),
       idbRequest(store.getAll()),
     ]);
+    for (const value of values) markStructuredPackage(value);
     return keys.map((key, index) => [key, values[index]]);
   }
   async keys(store: string): Promise<string[]> {
@@ -646,6 +671,21 @@ export class LocalStore {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
+  }
+  /** Read one package's committed revision and presence in one readonly transaction. */
+  async packageState(
+    id: string,
+  ): Promise<{ revision: string | undefined; present: boolean }> {
+    const db = await this.database;
+    const tx = db.transaction(["packages", "packageRevisions"]);
+    const [revision, key] = await Promise.all([
+      idbRequest(tx.objectStore("packageRevisions").get(id)),
+      idbRequest(tx.objectStore("packages").getKey(id)),
+    ]);
+    return {
+      revision: revision as string | undefined,
+      present: key !== undefined,
+    };
   }
   async putProjectedRecord(
     record: { id: string; body?: string | null },
@@ -1562,6 +1602,30 @@ export class LocalStore {
     delete (preferences as Preferences & { keepUnlocked?: boolean })
       .keepUnlocked;
     return preferences;
+  }
+  /** Read saved preferences and selected key backup in one readonly transaction. */
+  async loadSessionState(): Promise<{
+    preferences: Preferences;
+    backup: KeyBackup | undefined;
+  }> {
+    const db = await this.database;
+    const tx = db.transaction(["prefs", "keys"]);
+    const [stored, backup] = await Promise.all([
+      idbRequest(
+        tx.objectStore("prefs").get("preferences") as IDBRequest<
+          Partial<Preferences> | undefined
+        >,
+      ),
+      idbRequest(
+        tx.objectStore("keys").get("selected") as IDBRequest<
+          KeyBackup | undefined
+        >,
+      ),
+    ]);
+    const preferences = { ...defaultPreferences, ...(stored ?? {}) };
+    delete (preferences as Preferences & { keepUnlocked?: boolean })
+      .keepUnlocked;
+    return { preferences, backup };
   }
   async setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
     const db = await this.database;

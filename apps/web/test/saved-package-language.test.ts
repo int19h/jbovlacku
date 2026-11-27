@@ -99,13 +99,21 @@ async function countWordIds(page: Page) {
     const response = await route.fetch();
     const source = await response.text();
     const marker = "function runtime_word_identifier(bytes) {";
+    const batchMarker = "function word_id_spellings(spellings) {";
     expect(source).toContain(marker);
+    expect(source).toContain(batchMarker);
     await route.fulfill({
       response,
-      body: source.replace(
-        marker,
-        marker + "globalThis.wordIdCalls = (globalThis.wordIdCalls ?? 0) + 1;",
-      ),
+      body: source
+        .replace(
+          marker,
+          marker + "globalThis.wordIdCalls = (globalThis.wordIdCalls ?? 0) + 1;",
+        )
+        .replace(
+          batchMarker,
+          batchMarker +
+            'globalThis.wordIdBatchCalls = (globalThis.wordIdBatchCalls ?? 0) + 1; globalThis.wordIdBatchSpellings = (globalThis.wordIdBatchSpellings ?? 0) + (spellings ? spellings.split("\\0").length : 0);',
+        ),
     });
   });
   await page.route("**/api/v1/words/**", (route) => route.abort());
@@ -117,7 +125,7 @@ test("a saved pair uses word IDs only when it needs an identity", async ({
   const spellings = ["bajra", "ba'a", "Ba’a", "máik", "水", ".djan.", "ba a"];
   const rows = Array.from({ length: 12 }, (_, i) => ({
     ...englishRow,
-    event: "jve1:" + (i + 2).toString(16).padStart(64, "0"),
+    event: "jve1:2" + (i + 1).toString(16).padStart(63, "0"),
     word: { language: "jbo", spelling: spellings[i % spellings.length] },
     rafsi: [],
   }));
@@ -129,7 +137,13 @@ test("a saved pair uses word IDs only when it needs an identity", async ({
   await expect(
     page.locator('main a[href="/word/cukta?lang=en"]').first(),
   ).toBeVisible();
-  expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+  expect(
+    await page.evaluate(() => ({
+      single: (globalThis as any).wordIdCalls ?? 0,
+      batches: (globalThis as any).wordIdBatchCalls ?? 0,
+      batchedSpellings: (globalThis as any).wordIdBatchSpellings ?? 0,
+    })),
+  ).toEqual({ single: 1, batches: 1, batchedSpellings: 1 });
 });
 
 test("a 30,000-row saved pair makes zero extra word-ID calls and enforces legal and illegal fallback batches", async ({
@@ -173,8 +187,14 @@ test("a 30,000-row saved pair makes zero extra word-ID calls and enforces legal 
   await expect(
     page.locator('main a[href="/word/cukta?lang=en"]').first(),
   ).toBeVisible();
-  // One ID for matching row 0 and one for pairCard; zero for the 29,999 tail rows.
-  expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+  // One batched ID for matching row 0 and one single ID for pairCard; zero for the 29,999 tail rows.
+  expect(
+    await page.evaluate(() => ({
+      single: (globalThis as any).wordIdCalls ?? 0,
+      batches: (globalThis as any).wordIdBatchCalls ?? 0,
+      batchedSpellings: (globalThis as any).wordIdBatchSpellings ?? 0,
+    })),
+  ).toEqual({ single: 1, batches: 1, batchedSpellings: 1 });
 
   // Now place an illegal fallback spelling in the final partial batch after 130 legal fallbacks.
   await page.evaluate(
@@ -1014,15 +1034,14 @@ for (const kind of ["dates", "selmaho"] as const)
     }
   });
 
-test("equal content with changed sharing reuses warm index, and four-depth named-property graph falls back cleanly at 82,688 units", async ({
+test("equal content with changed sharing reuses warm index, and four-depth graphs stay bounded under PR #176 list rules", async ({
   page,
 }) => {
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { searchPackage } = await import(
-      String("/src/data/package-search.ts")
-    );
+    const { searchPackage, samePackageStructure, PackageValidationError } =
+      await import(String("/src/data/package-search.ts"));
     const fields = (n: number) =>
       Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, "x"]));
     const makeRow = (i: number) => ({
@@ -1127,10 +1146,8 @@ test("equal content with changed sharing reuses warm index, and four-depth named
       }
     }
 
-    // Four-depth graph attached to a named property on selmaho must hit the
-    // comparison work cap, decline reuse, take the cold path, and succeed at
-    // workLimit: 82,688.
-    const dname = `r4-nested-depth-${Date.now()}`;
+    // Named property on selmaho is rejected up front by dense list checks,
+    // while a four-depth graph inside dates stops at the 2x comparison cap.
     const leaf = fields(14);
     const small = Object.fromEntries(
       Array.from({ length: 8 }, (_, i) => [`s${i}`, leaf]),
@@ -1142,24 +1159,37 @@ test("equal content with changed sharing reuses warm index, and four-depth named
       for (let j = 0; j < d; j++) obj = { v: obj };
       folded[`d${d}`] = obj;
     }
-    const row = makeRow(0);
-    (row.classification.selmaho as unknown as Record<string, unknown>).extra =
+    const extraRow = makeRow(0);
+    (extraRow.classification.selmaho as unknown as Record<string, unknown>).extra =
       folded;
-    let nestedCold = false;
-    let nestedFallbackPrepared = false;
+    let extraRejected = false;
     try {
-      const store = new LocalStore(dname);
-      await store.put("packages", "en", wrap([row]));
-      const before = await store.get("packages", "en");
-      nestedCold = (await searchPackage(before, "en", [])).prepared;
-      const after = await new LocalStore(dname).get("packages", "en");
-      nestedFallbackPrepared = (
-        await searchPackage(after, "en", [], { workLimit: 82_688 })
-      ).prepared;
-    } finally {
-      indexedDB.deleteDatabase(dname);
+      await searchPackage(wrap([extraRow]) as any, "en", []);
+    } catch (error) {
+      extraRejected = error instanceof PackageValidationError;
     }
-    return { sharingCases, nestedCold, nestedFallbackPrepared };
+
+    const foldedRow = makeRow(0);
+    foldedRow.attribution.dates = folded as any;
+    const foldedPkg = wrap([foldedRow]);
+    let foldedSpent = 0;
+    const capBudget = {
+      reserve(units: number) {
+        foldedSpent += units;
+        if (foldedSpent > 82_688) throw new Error("budget exceeded");
+      },
+    };
+    const foldedEqual = samePackageStructure(
+      structuredClone(foldedPkg),
+      foldedPkg as any,
+      capBudget as any,
+    );
+    return {
+      sharingCases,
+      extraRejected,
+      foldedEqual,
+      foldedSpent,
+    };
   });
 
   for (const item of result.sharingCases) {
@@ -1169,8 +1199,9 @@ test("equal content with changed sharing reuses warm index, and four-depth named
       hits: 1,
     });
   }
-  expect(result.nestedCold).toBe(true);
-  expect(result.nestedFallbackPrepared).toBe(true);
+  expect(result.extraRejected).toBe(true);
+  expect(result.foldedEqual).toBe(false);
+  expect(result.foldedSpent).toBeLessThanOrEqual(2_000);
 });
 
 test("unmodified shared-collection clones keep warm reuse, and long-string crossed squares follow the per-reference cold-path budget", async ({
@@ -1270,7 +1301,7 @@ test("unmodified shared-collection clones keep warm reuse, and long-string cross
 
     // Equal-content k=32 crossed square of 4x2048-char selmaho arrays.
     // Reuses warm index under default budget; refuses with SearchBudgetError
-    // below per-reference comparison cost (100,000 < 139,267).
+    // below per-reference comparison cost (100,000 < 139,264).
     const e1aDb = `e1a-${Date.now()}`;
     let e1aWarmPrepared = true;
     let e1aLowLimitError = "";

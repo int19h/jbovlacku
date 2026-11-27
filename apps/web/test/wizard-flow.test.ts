@@ -731,6 +731,7 @@ test("Publish reviews saved compound conflicts and rejects changed coverage", as
     const cached = await store.get("packages", "en");
     cached.entries.push({
       ...cached.entries.at(-1),
+      event: "jve1:" + "f".repeat(64),
       word: { language: "jbo", spelling: "spali" },
     });
     await store.put("packages", "en", cached);
